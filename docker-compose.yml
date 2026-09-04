@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vulhunt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-vulhunt}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vulhunt} -d ${POSTGRES_DB:-vulhunt}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build: ./apps/worker
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-vulhunt}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-vulhunt}
+    ports:
+      - "${WORKER_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  web:
+    build: ./apps/web
+    environment:
+      WORKER_API_URL: http://worker:8000
+    ports:
+      - "${WEB_PORT:-3001}:3000"
+    depends_on:
+      worker:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  pgdata:

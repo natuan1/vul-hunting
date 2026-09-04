@@ -13,7 +13,16 @@ export default function RootLayout({
 }) {
   return (
     <html lang="vi">
-      <body>{children}</body>
+      <body>
+        <header className="topnav">
+          <a href="/" className="brand">vul-hunting</a>
+          <nav>
+            <a href="/">Trạng thái</a>
+            <a href="/programs">Programs</a>
+          </nav>
+        </header>
+        {children}
+      </body>
     </html>
   );
 }

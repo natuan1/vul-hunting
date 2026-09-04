@@ -1,0 +1,44 @@
+# Config hermes-agent cho vul-hunting.
+# File này được mount vào /opt/data/config.yaml trong container hermes (compose).
+# Lưu ý: `model.default` phải khớp OPENROUTER_MODEL trong `.env` — đổi 1 thì đổi cả 2.
+
+model:
+  provider: "openrouter"
+  default: "nvidia/nemotron-3.5-lightning:free"
+  base_url: "https://openrouter.ai/api/v1"
+
+terminal:
+  backend: "local"
+  cwd: "/opt/data/workspace"
+  timeout: 180
+
+# Headless qua API server: mặc định DENY mọi lệnh cần duyệt (không có ai bấm approve).
+approvals:
+  mode: "smart"
+  timeout: 300
+  cron_mode: "deny"
+  single_query_mode: "deny"
+  unattended_mode: "deny"
+
+# Lệnh khớp pattern (fnmatch glob) chạy không cần duyệt — chỉ read-only/recon an toàn.
+# Bổ sung dần theo từng ticket (recon, verification) — KHÔNG hardcode trong code worker.
+command_allowlist:
+  - "ls*"
+  - "pwd"
+  - "cat *"
+  - "head *"
+  - "tail *"
+  - "grep *"
+  - "rg *"
+  - "wc *"
+  - "file *"
+  - "sort *"
+  - "uniq *"
+  - "find *"
+  - "stat *"
+  - "dig *"
+  - "whois *"
+  - "host *"
+  - "python3 *"
+  - "pip list*"
+  - "docker ps*"

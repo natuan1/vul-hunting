@@ -15,10 +15,40 @@ services:
       timeout: 3s
       retries: 10
 
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    container_name: vulhunt-hermes
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    environment:
+      HERMES_UID: "10000"
+      HERMES_GID: "10000"
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY}
+      API_SERVER_ENABLED: "true"
+      API_SERVER_KEY: ${HERMES_API_SERVER_KEY}
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_PORT: "8642"
+    volumes:
+      - hermes_data:/opt/data
+      - ./config/hermes/config.yaml:/opt/data/config.yaml:ro
+      - ./config/hermes/skills:/opt/data/skills
+    # KHÔNG có `ports:` — API server chỉ lắng nghe trong mạng nội bộ compose
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8642/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
   worker:
     build: ./apps/worker
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-vulhunt}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-vulhunt}
+      HERMES_API_URL: http://hermes:8642
+      HERMES_API_KEY: ${HERMES_API_SERVER_KEY}
+      HACKERONE_USERNAME: ${HACKERONE_USERNAME}
+      HACKERONE_API_TOKEN: ${HACKERONE_API_TOKEN}
+      INTIGRITI_API_TOKEN: ${INTIGRITI_API_TOKEN}
     ports:
       - "${WORKER_PORT:-8000}:8000"
     depends_on:
@@ -49,3 +79,4 @@ services:
 
 volumes:
   pgdata:
+  hermes_data:

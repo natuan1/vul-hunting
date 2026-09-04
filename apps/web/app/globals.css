@@ -80,3 +80,164 @@ h1 {
   color: #5c6478;
   font-size: 12px;
 }
+
+/* ── Nav ─────────────────────────── */
+.topnav {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 12px 24px;
+  border-bottom: 1px solid #1c2333;
+  background: #11151f;
+}
+
+.topnav a {
+  color: #e6e8ee;
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.topnav a.brand {
+  font-weight: 700;
+}
+
+.topnav nav {
+  display: flex;
+  gap: 16px;
+}
+
+.topnav nav a {
+  color: #8b93a7;
+}
+
+.topnav nav a:hover {
+  color: #e6e8ee;
+}
+
+/* ── Programs ─────────────────────────── */
+.page.wide {
+  max-width: 960px;
+}
+
+.pagehead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.btn {
+  border: 1px solid #2a3350;
+  background: #161b28;
+  color: #e6e8ee;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.btn.primary {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  margin: 16px 0;
+  flex-wrap: wrap;
+}
+
+.toolbar select,
+.toolbar input {
+  background: #11151f;
+  color: #e6e8ee;
+  border: 1px solid #2a3350;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.toolbar input {
+  flex: 1;
+  min-width: 220px;
+}
+
+.progress {
+  border: 1px solid #1c3a5f;
+  background: rgba(37, 99, 235, 0.12);
+  color: #93c5fd;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.alert {
+  border: 1px solid #5f1c1c;
+  background: rgba(215, 58, 74, 0.12);
+  color: #f87171;
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.tbl th {
+  text-align: left;
+  color: #8b93a7;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 8px 10px;
+  border-bottom: 1px solid #1c2333;
+}
+
+.tbl td {
+  padding: 10px;
+  border-bottom: 1px solid #141927;
+  vertical-align: top;
+}
+
+.pname {
+  display: block;
+  font-weight: 600;
+}
+
+.phandle {
+  display: block;
+  color: #8b93a7;
+  font-size: 12px;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+  color: #8b93a7;
+  font-size: 13px;
+}
+
+.btnrow {
+  display: flex;
+  gap: 8px;
+}
+
+.done-note {
+  color: #4ade80;
+  font-size: 13px;
+  margin-bottom: 12px;
+}

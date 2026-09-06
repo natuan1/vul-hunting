@@ -7,7 +7,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
-from . import hermes_client, sync
+from . import hermes_client, summary, sync
 from .config import settings
 from .db import run_migrations
 
@@ -24,6 +24,7 @@ async def lifespan(app: FastAPI):
     if applied:
         logging.getLogger("worker").info("applied migrations: %s", applied)
     await sync.recover_on_startup(pool)
+    await summary.recover_on_startup(pool)
     yield
     if pool is not None:
         await pool.close()
@@ -207,8 +208,12 @@ async def get_program(program_id: int) -> dict:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            SELECT pr.*, pl.slug AS platform, pl.name AS platform_name
-            FROM programs pr JOIN platforms pl ON pl.id = pr.platform_id
+            SELECT pr.*, pl.slug AS platform, pl.name AS platform_name,
+                   s.summary, s.model AS summary_model, s.status AS summary_status,
+                   s.error AS summary_error, s.generated_at AS summary_generated_at
+            FROM programs pr
+            JOIN platforms pl ON pl.id = pr.platform_id
+            LEFT JOIN program_summaries s ON s.program_id = pr.id
             WHERE pr.id = $1
             """,
             program_id,
@@ -221,5 +226,17 @@ async def get_program(program_id: int) -> dict:
             program_id,
         )
     program = dict(row)
+    # chưa từng sinh summary → row LEFT JOIN rỗng → chuẩn hoá về 'none'
+    program["summary_status"] = program["summary_status"] or "none"
     program["assets"] = [dict(a) for a in assets]
     return program
+
+
+@app.post("/programs/{program_id}/summary")
+async def generate_program_summary(program_id: int) -> dict:
+    """Bật sinh AI summary nền (lazy khi mở detail / bấm refresh). Không chặn."""
+    assert pool is not None
+    result = await summary.start(pool, program_id)
+    if result["status"] == "not_found":
+        raise HTTPException(status_code=404, detail="program không tồn tại")
+    return result

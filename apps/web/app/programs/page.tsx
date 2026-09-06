@@ -249,8 +249,10 @@ export default function ProgramsPage() {
           {items.map((p) => (
             <tr key={p.id}>
               <td>
-                <span className="pname">{p.name}</span>
-                <span className="phandle">{p.handle}</span>
+                <a className="plink" href={`/programs/${p.id}`}>
+                  <span className="pname">{p.name}</span>
+                  <span className="phandle">{p.handle}</span>
+                </a>
               </td>
               <td>{p.platform}</td>
               <td>

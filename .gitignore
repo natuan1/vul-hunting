@@ -28,6 +28,9 @@ coverage/
 # Docker runtime data
 data/
 
+# Hermes runtime state (curator tự ghi mỗi lần chạy — không phải config)
+config/hermes/skills/.curator_state
+
 # OS
 .DS_Store
 Thumbs.db

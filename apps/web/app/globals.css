@@ -392,6 +392,19 @@ details[open] summary {
   width: 190px;
 }
 
+.runform label.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #c3c9d9;
+}
+
+.runform label.check input {
+  width: auto;
+  accent-color: #2563eb;
+}
+
 .logstream {
   background: #0d1119;
   border: 1px solid #1c2333;

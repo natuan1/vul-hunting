@@ -28,6 +28,14 @@ ORDER BY eligible_for_bounty DESC, asset_identifier
 """
 
 
+def parse_snapshot(value) -> list[dict]:
+    """asyncpg trả jsonb dạng str (codec toàn cục không ăn trên asyncpg 0.30) —
+    parse tường minh tại điểm tiêu thụ; None → list rỗng."""
+    if isinstance(value, str):
+        return json.loads(value)
+    return value or []
+
+
 def default_ident(platform_slug: str) -> tuple[str, str] | None:
     """Header định danh mặc định cho platform, vd ('X-Bug-Bounty', 'HackerOne-tuan').
 
@@ -49,6 +57,7 @@ async def create_run(
     rate_limit_rps: float | None,
     ident_header_name: str | None,
     ident_header_value: str | None,
+    allow_non_prod: bool = False,
 ) -> dict:
     """Tạo Run 'pending' + Scope snapshot + job xếp hàng — chung 1 transaction để
     không bao giờ tồn tại Run mà mất job (mất job thì không thứ gì chạy lại được).
@@ -84,8 +93,9 @@ async def create_run(
             row = await conn.fetchrow(
                 """
                 INSERT INTO runs (program_id, rate_limit_rps,
-                                  ident_header_name, ident_header_value, scope_snapshot)
-                VALUES ($1, $2, $3, $4, $5)
+                                  ident_header_name, ident_header_value,
+                                  scope_snapshot, allow_non_prod)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING *
                 """,
                 program_id,
@@ -93,6 +103,7 @@ async def create_run(
                 ident_header_name,
                 ident_header_value,
                 json.dumps(snapshot),
+                allow_non_prod,
             )
             job_id = await jobqueue.enqueue(conn, row["id"])
     return {"run": dict(row), "job_id": job_id}
@@ -114,6 +125,7 @@ async def get_run(pool: asyncpg.Pool, run_id: int) -> dict | None:
         if row is None:
             return None
         run = dict(row)
+        run["scope_snapshot"] = parse_snapshot(run["scope_snapshot"])
         run["tool_executions"] = [
             dict(r)
             for r in await conn.fetch(

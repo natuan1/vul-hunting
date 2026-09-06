@@ -2,7 +2,12 @@
 
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fmtTime, statusBadgeClass } from "../../_lib/runui";
+import {
+  decisionBadgeClass,
+  decisionLabel,
+  fmtTime,
+  statusBadgeClass,
+} from "../../_lib/runui";
 
 type ToolExec = {
   id: number;
@@ -47,10 +52,20 @@ type RunDetail = {
 
 type LogLine = { id: number; level: string; message: string; ts: string };
 
+type AuditEntry = {
+  id: number;
+  tool: string;
+  target: string;
+  decision: string;
+  reason: string | null;
+  ts: string;
+};
+
 export default function RunDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [run, setRun] = useState<RunDetail | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const lastIdRef = useRef(0);
   const logBoxRef = useRef<HTMLDivElement | null>(null);
@@ -64,6 +79,13 @@ export default function RunDetailPage() {
       throw new Error(body.detail ?? `HTTP ${res.status}`);
     }
     return (await res.json()) as RunDetail;
+  }, [id]);
+
+  const loadAudit = useCallback(async () => {
+    const res = await fetch(`/api/audit?run_id=${id}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    setAudit(data.items ?? []);
   }, [id]);
 
   // ── SSE log stream — đứt kết nối thì tự nối lại từ log cuối đã thấy ──
@@ -85,12 +107,13 @@ export default function RunDetailPage() {
       const { status } = JSON.parse((e as MessageEvent).data);
       setRun((r) => (r ? { ...r, status } : r));
       load().then(setRun).catch(() => {}); // nạp lại chi tiết (tool executions, finished_at)
+      loadAudit().catch(() => {});
     });
     es.onerror = () => {
       es.close();
       if (!doneRef.current) setTimeout(openStream, 2000);
     };
-  }, [id, load]);
+  }, [id, load, loadAudit]);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,6 +122,7 @@ export default function RunDetailPage() {
         const r = await load();
         if (cancelled) return;
         setRun(r);
+        loadAudit().catch(() => {});
         // chạy lại run cũ: stream phát lại từ đầu, mọi dòng có id nên UI không lo trùng
         openStream();
       } catch (e) {
@@ -110,7 +134,7 @@ export default function RunDetailPage() {
       doneRef.current = true;
       esRef.current?.close();
     };
-  }, [load, openStream]);
+  }, [load, openStream, loadAudit]);
 
   // tự trượt xuống dòng log mới nhất
   useEffect(() => {
@@ -211,6 +235,39 @@ export default function RunDetailPage() {
                   {fmtTime(t.started_at)}
                   {t.finished_at && ` → ${new Date(t.finished_at).toLocaleTimeString("vi-VN")}`}
                 </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {/* ── Audit — Scope Validator ── */}
+      <h2 className="section-title">Audit — Scope Validator ({audit.length})</h2>
+      {audit.length === 0 ? (
+        <p className="meta">Chưa có target nào được kiểm tra.</p>
+      ) : (
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>Thời gian</th>
+              <th>Target</th>
+              <th>Tool</th>
+              <th>Quyết định</th>
+              <th>Lý do</th>
+            </tr>
+          </thead>
+          <tbody>
+            {audit.map((a) => (
+              <tr key={a.id}>
+                <td>{fmtTime(a.ts)}</td>
+                <td><code>{a.target}</code></td>
+                <td><code>{a.tool}</code></td>
+                <td>
+                  <span className={decisionBadgeClass(a.decision)}>
+                    {decisionLabel(a.decision)}
+                  </span>
+                </td>
+                <td className="note">{a.reason ?? "—"}</td>
               </tr>
             ))}
           </tbody>

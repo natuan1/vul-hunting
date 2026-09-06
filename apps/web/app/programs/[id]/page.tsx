@@ -112,6 +112,7 @@ export default function ProgramDetailPage() {
   const [runRate, setRunRate] = useState("1");
   const [runHeaderName, setRunHeaderName] = useState("X-Bug-Bounty");
   const [runHeaderValue, setRunHeaderValue] = useState("");
+  const [allowNonProd, setAllowNonProd] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [creatingRun, setCreatingRun] = useState(false);
 
@@ -124,6 +125,7 @@ export default function ProgramDetailPage() {
       if (!Number.isNaN(rate)) body.rate_limit_rps = rate;
       if (runHeaderName.trim()) body.ident_header_name = runHeaderName.trim();
       if (runHeaderValue.trim()) body.ident_header_value = runHeaderValue.trim();
+      if (allowNonProd) body.allow_non_prod = true;
       const res = await fetch(`/api/programs/${id}/runs`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -342,6 +344,14 @@ export default function ProgramDetailPage() {
               placeholder="để trống → mặc định HackerOne-&lt;username&gt; từ .env"
               onChange={(e) => setRunHeaderValue(e.target.value)}
             />
+          </label>
+          <label className="check" title="dev./staging./uat./qa./sandbox./test./preview. dưới wildcard là non-production — mặc định Scope Validator chặn không auto-test">
+            <input
+              type="checkbox"
+              checked={allowNonProd}
+              onChange={(e) => setAllowNonProd(e.target.checked)}
+            />
+            Cho phép non-production
           </label>
           <button className="btn primary" onClick={startRun} disabled={creatingRun}>
             {creatingRun ? "Đang tạo…" : "▶ Chạy Run"}

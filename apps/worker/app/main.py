@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import socket
 import time
@@ -11,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import hermes_client, jobqueue, runner, runs, summary, sync
+from . import audit, hermes_client, jobqueue, runner, runs, summary, sync
 from .config import settings
 from .db import run_migrations
 
@@ -21,19 +20,13 @@ pool: asyncpg.Pool | None = None
 _consumer_task: asyncio.Task | None = None
 
 
-async def _init_conn(conn: asyncpg.Connection) -> None:
-    # jsonb ↔ dict tự động (scope_snapshot của Run đọc thẳng được)
-    await conn.set_type_codec(
-        "jsonb", schema="pg_catalog", encoder=json.dumps, decoder=json.loads
-    )
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global pool, _consumer_task
-    pool = await asyncpg.create_pool(
-        settings.database_url, min_size=1, max_size=5, init=_init_conn
-    )
+    # jsonb KHÔNG đặt codec toàn cục (set_type_codec 'pg_catalog' không có tác
+    # dụng với jsonb trên asyncpg 0.30) — parse tường minh ở 2 điểm tiêu thụ:
+    # runs.get_run và runner.execute_run
+    pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
     applied = await run_migrations(pool)
     if applied:
         logging.getLogger("worker").info("applied migrations: %s", applied)
@@ -273,6 +266,7 @@ class CreateRunRequest(BaseModel):
     rate_limit_rps: float | None = Field(default=1.0)  # None (null) = không giới hạn
     ident_header_name: str | None = None  # trống → 'X-Bug-Bounty'
     ident_header_value: str | None = None  # trống → mặc định từ username platform trong env
+    allow_non_prod: bool = False  # cho phép subdomain non-production (mặc định chặn)
 
 
 @app.post("/programs/{program_id}/runs", status_code=201)
@@ -287,6 +281,7 @@ async def create_run(program_id: int, req: CreateRunRequest | None = None) -> di
             req.rate_limit_rps,
             req.ident_header_name,
             req.ident_header_value,
+            allow_non_prod=req.allow_non_prod,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -328,3 +323,15 @@ async def stream_run(run_id: int, after: int = Query(0, ge=0)) -> StreamingRespo
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.get("/audit")
+async def list_audit(
+    run_id: int | None = None,
+    target: str | None = None,
+    limit: int = Query(200, ge=1, le=1000),
+) -> dict:
+    """Audit log của Scope Validator — lọc theo Run và/hoặc theo asset (target)."""
+    assert pool is not None
+    items = await audit.list_entries(pool, run_id, target, limit)
+    return {"items": items}

@@ -19,6 +19,7 @@ export default function RootLayout({
           <nav>
             <a href="/">Trạng thái</a>
             <a href="/programs">Programs</a>
+            <a href="/runs">Runs</a>
           </nav>
         </header>
         {children}

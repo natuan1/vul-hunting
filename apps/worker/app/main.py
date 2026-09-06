@@ -1,31 +1,55 @@
+import asyncio
+import json
 import logging
+import socket
 import time
 from contextlib import asynccontextmanager
 
 import asyncpg
 import httpx
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
-from . import hermes_client, summary, sync
+from . import hermes_client, jobqueue, runner, runs, summary, sync
 from .config import settings
 from .db import run_migrations
 
 logging.basicConfig(level=logging.INFO)
 
 pool: asyncpg.Pool | None = None
+_consumer_task: asyncio.Task | None = None
+
+
+async def _init_conn(conn: asyncpg.Connection) -> None:
+    # jsonb ↔ dict tự động (scope_snapshot của Run đọc thẳng được)
+    await conn.set_type_codec(
+        "jsonb", schema="pg_catalog", encoder=json.dumps, decoder=json.loads
+    )
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global pool
-    pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
+    global pool, _consumer_task
+    pool = await asyncpg.create_pool(
+        settings.database_url, min_size=1, max_size=5, init=_init_conn
+    )
     applied = await run_migrations(pool)
     if applied:
         logging.getLogger("worker").info("applied migrations: %s", applied)
     await sync.recover_on_startup(pool)
     await summary.recover_on_startup(pool)
+    # consumer queue (ADR-0001) — job crash giữa chừng được reclaim qua visibility timeout
+    worker_id = f"{socket.gethostname()}-{id(pool)}"
+    _consumer_task = asyncio.create_task(
+        jobqueue.loop(
+            pool, runner.HANDLERS, runner.DEAD_HANDLERS, worker_id, runner.RETRY_HANDLERS
+        )
+    )
     yield
+    if _consumer_task is not None:
+        _consumer_task.cancel()
+        await asyncio.gather(_consumer_task, return_exceptions=True)
     if pool is not None:
         await pool.close()
 
@@ -240,3 +264,67 @@ async def generate_program_summary(program_id: int) -> dict:
     if result["status"] == "not_found":
         raise HTTPException(status_code=404, detail="program không tồn tại")
     return result
+
+
+# ─────────────────── Run core: queue + log stream (ticket #6) ───────────────────
+
+
+class CreateRunRequest(BaseModel):
+    rate_limit_rps: float | None = Field(default=1.0)  # None (null) = không giới hạn
+    ident_header_name: str | None = None  # trống → 'X-Bug-Bounty'
+    ident_header_value: str | None = None  # trống → mặc định từ username platform trong env
+
+
+@app.post("/programs/{program_id}/runs", status_code=201)
+async def create_run(program_id: int, req: CreateRunRequest | None = None) -> dict:
+    """Tạo Run 'pending' + Scope snapshot + job xếp hàng chung 1 transaction."""
+    assert pool is not None
+    req = req or CreateRunRequest()
+    try:
+        result = await runs.create_run(
+            pool,
+            program_id,
+            req.rate_limit_rps,
+            req.ident_header_name,
+            req.ident_header_value,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not result:
+        raise HTTPException(status_code=404, detail="program không tồn tại")
+    return result
+
+
+@app.get("/runs")
+async def list_runs(status: str | None = None, limit: int = Query(50, ge=1, le=200)) -> dict:
+    assert pool is not None
+    items = await runs.list_runs(pool, status, limit)
+    return {"items": items}
+
+
+@app.get("/runs/{run_id}")
+async def get_run(run_id: int) -> dict:
+    assert pool is not None
+    run = await runs.get_run(pool, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run không tồn tại")
+    return run
+
+
+@app.get("/runs/{run_id}/logs")
+async def get_run_logs(run_id: int, after: int = Query(0, ge=0)) -> dict:
+    """Log mới kể từ `after` (id cuối đã thấy) — fallback poll khi SSE không dùng được."""
+    assert pool is not None
+    items = await runs.logs_after(pool, run_id, after)
+    return {"items": items}
+
+
+@app.get("/runs/{run_id}/stream")
+async def stream_run(run_id: int, after: int = Query(0, ge=0)) -> StreamingResponse:
+    """SSE stream log của Run — generator nằm ở runs.py, endpoint chỉ bọc response."""
+    assert pool is not None
+    return StreamingResponse(
+        runs.stream_events(pool, run_id, after),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

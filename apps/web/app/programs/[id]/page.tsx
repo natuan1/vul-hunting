@@ -1,6 +1,6 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type Asset = {
@@ -100,12 +100,43 @@ function Markdown({ text }: { text: string }) {
 
 export default function ProgramDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const router = useRouter();
   const [program, setProgram] = useState<ProgramDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [triggering, setTriggering] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const autoTriggeredRef = useRef(false);
+
+  // config Run mới (ticket #6) — header để trống thì worker lấy mặc định từ env
+  const [runRate, setRunRate] = useState("1");
+  const [runHeaderName, setRunHeaderName] = useState("X-Bug-Bounty");
+  const [runHeaderValue, setRunHeaderValue] = useState("");
+  const [runError, setRunError] = useState<string | null>(null);
+  const [creatingRun, setCreatingRun] = useState(false);
+
+  const startRun = async () => {
+    setCreatingRun(true);
+    setRunError(null);
+    try {
+      const body: Record<string, unknown> = {};
+      const rate = parseFloat(runRate);
+      if (!Number.isNaN(rate)) body.rate_limit_rps = rate;
+      if (runHeaderName.trim()) body.ident_header_name = runHeaderName.trim();
+      if (runHeaderValue.trim()) body.ident_header_value = runHeaderValue.trim();
+      const res = await fetch(`/api/programs/${id}/runs`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail ?? `HTTP ${res.status}`);
+      router.push(`/runs/${data.run.id}`);
+    } catch (e) {
+      setRunError(e instanceof Error ? e.message : String(e));
+      setCreatingRun(false);
+    }
+  };
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/programs/${id}`);
@@ -273,6 +304,53 @@ export default function ProgramDetailPage() {
         >
           {p.summary_status === "ready" ? "Refresh summary" : "Sinh summary"}
         </button>
+      </section>
+
+      {/* ── Chạy Run ── */}
+      <section className="tile">
+        <h2>Chạy Run</h2>
+        <p className="meta">
+          Tạo Run cho Program này — Scope được chụp snapshot ngay lúc tạo. Rate limit
+          và header định danh áp dụng cho mọi Tool Execution trong Run. Hiện mới có
+          stub tool (sleep + echo) để chạy thử vòng lặp; tool thật ở ticket sau.
+        </p>
+        {runError && <p className="alert">Không tạo được Run: {runError}</p>}
+        <div className="runform">
+          <label>
+            Rate limit (req/s)
+            <input
+              type="number"
+              min="0.1"
+              step="0.1"
+              value={runRate}
+              placeholder="1"
+              onChange={(e) => setRunRate(e.target.value)}
+            />
+          </label>
+          <label>
+            Header định danh
+            <input
+              value={runHeaderName}
+              placeholder="X-Bug-Bounty"
+              onChange={(e) => setRunHeaderName(e.target.value)}
+            />
+          </label>
+          <label>
+            Giá trị header
+            <input
+              value={runHeaderValue}
+              placeholder="để trống → mặc định HackerOne-&lt;username&gt; từ .env"
+              onChange={(e) => setRunHeaderValue(e.target.value)}
+            />
+          </label>
+          <button className="btn primary" onClick={startRun} disabled={creatingRun}>
+            {creatingRun ? "Đang tạo…" : "▶ Chạy Run"}
+          </button>
+        </div>
+        <p className="meta">
+          Rate limit để trống → mặc định 1 req/s (an toàn); header để trống → lấy
+          mặc định từ <code>.env</code>.
+        </p>
       </section>
 
       {/* ── Scope ── */}

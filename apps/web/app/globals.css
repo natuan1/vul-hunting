@@ -364,3 +364,66 @@ details[open] summary {
   max-height: 480px;
   overflow-y: auto;
 }
+
+/* ── Run: form tạo Run + log stream ─────────────────────────── */
+.runform {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.runform label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #8b93a7;
+}
+
+.runform input {
+  background: #11151f;
+  color: #e6e8ee;
+  border: 1px solid #2a3350;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+  width: 190px;
+}
+
+.logstream {
+  background: #0d1119;
+  border: 1px solid #1c2333;
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.logline {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.logline.err {
+  color: #f87171;
+}
+
+.logline.cursor {
+  animation: blink 1s steps(1) infinite;
+}
+
+.logts {
+  color: #5c6478;
+  margin-right: 10px;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}

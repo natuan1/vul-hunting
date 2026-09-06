@@ -8,9 +8,12 @@ class RateLimiter:
     def __init__(self, min_interval: float) -> None:
         self.min_interval = min_interval
         self._next_ok = 0.0
+        self._lock = asyncio.Lock()  # chốt slot ngay cả khi nhiều waiter cùng lúc
 
     async def wait(self) -> None:
-        now = time.monotonic()
-        if now < self._next_ok:
-            await asyncio.sleep(self._next_ok - now)
-        self._next_ok = time.monotonic() + self.min_interval
+        # giữ lock suốt chỗ ngủ để các waiter lần lượt nhận slot, không dồn cục
+        async with self._lock:
+            delay = self._next_ok - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            self._next_ok = time.monotonic() + self.min_interval

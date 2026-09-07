@@ -42,9 +42,9 @@ services:
       retries: 10
       start_period: 60s
 
-  # Image tooling: subfinder/amass/dnsx/naabu/httpx pin version (ticket #8) —
-  # build xong là xong (entrypoint true); worker chạy tool từ image này qua
-  # docker.sock (sibling container, mô hình ADR-0003)
+  # Image tooling: subfinder/amass/dnsx/naabu/httpx + katana/gau/waymore/gf
+  # pin version (ticket #8, #9) — build xong là xong (entrypoint true); worker
+  # chạy tool từ image này qua docker.sock (sibling container, mô hình ADR-0003)
   tooling:
     build: ./docker/tooling
     image: vulhunt-tooling:latest
@@ -61,6 +61,7 @@ services:
       HACKERONE_API_TOKEN: ${HACKERONE_API_TOKEN}
       INTIGRITI_API_TOKEN: ${INTIGRITI_API_TOKEN}
       INTIGRITI_USERNAME: ${INTIGRITI_USERNAME:-}
+      OTX_API_KEY: ${OTX_API_KEY:-}
       TOOLING_IMAGE: vulhunt-tooling:latest
       ARTIFACTS_DIR: /data/artifacts
       RECON_VOLUME: vul-hunting_recon_data

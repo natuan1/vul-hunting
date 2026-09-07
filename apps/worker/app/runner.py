@@ -107,6 +107,7 @@ async def execute_run(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
         pool,
         run_id,
         f"Run hoàn tất: {summary['subdomains']} subdomain · {summary['live_hosts']} live host · "
+        f"{summary['urls']} URL ({summary['urls_classed']} có nhãn class) · "
         f"{summary['blocked']} target bị Scope Validator chặn",
     )
     log.info("run %d hoàn tất", run_id)

@@ -1,0 +1,42 @@
+#!/bin/bash
+# gf-slice (ticket #9): phân loại URL theo pattern ~/.gf bằng chính engine gf.
+#
+# stdin : danh sách URL (1 URL/dòng — đã được worker chuẩn hoá + dedupe)
+# stdout: JSONL  {"url": "<url>", "classes": ["xss", "redirect", ...]}
+#
+# Mỗi pattern file trong ~/.gf (tomnomnom Gf-Patterns) là 1 class: pattern nào
+# match URL nào thì URL đó được gắn nhãn class tương ứng. 1 URL có thể mang
+# nhiều class. Worker parse JSONL này vào cột classes của recon_urls.
+set -u
+
+command -v gf >/dev/null 2>&1 || { echo "gf không có trong image" >&2; exit 1; }
+command -v jq >/dev/null 2>&1 || { echo "jq không có trong image" >&2; exit 1; }
+
+in=$(mktemp)
+trap 'rm -f "$in"' EXIT
+cat > "$in"
+
+pattern_dir="${GF_PATTERN_DIR:-$HOME/.gf}"
+
+declare -A classes_by_url=()
+
+for patfile in "$pattern_dir"/*.json; do
+    [ -e "$patfile" ] || continue
+    pat=$(basename "$patfile" .json)
+    # gf là wrapper của grep — thoát khi không match; không coi là lỗi
+    while IFS= read -r url; do
+        [ -n "$url" ] || continue
+        if [ -n "${classes_by_url[$url]:-}" ]; then
+            classes_by_url[$url]="${classes_by_url[$url]},$pat"
+        else
+            classes_by_url[$url]="$pat"
+        fi
+    done < <(gf "$pat" < "$in" 2>/dev/null | sort -u || true)
+done
+
+for url in "${!classes_by_url[@]}"; do
+    classes_json=$(printf '%s\n' "${classes_by_url[$url]}" | tr ',' '\n' | jq -R . | jq -s .)
+    jq -cn --arg url "$url" --argjson classes "$classes_json" '{url: $url, classes: $classes}'
+done
+
+exit 0

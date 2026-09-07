@@ -75,10 +75,21 @@ type ReconAsset = {
   first_seen: string;
 };
 
+type RunUrl = {
+  url: string;
+  host: string;
+  params: string[];
+  sources: string[];
+  classes: string[];
+  first_seen: string;
+};
+
 type ReconCounts = {
   subdomains: number;
   live_hosts: number;
   open_ports: number;
+  urls: number;
+  urls_classed: number;
 };
 
 export default function RunDetailPage() {
@@ -87,6 +98,7 @@ export default function RunDetailPage() {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [assets, setAssets] = useState<ReconAsset[]>([]);
+  const [urls, setUrls] = useState<RunUrl[]>([]);
   const [error, setError] = useState<string | null>(null);
   const lastIdRef = useRef(0);
   const logBoxRef = useRef<HTMLDivElement | null>(null);
@@ -108,6 +120,17 @@ export default function RunDetailPage() {
     if (!res.ok) return;
     const data = await res.json();
     setAssets(data.items ?? []);
+    setRun((r) =>
+      r && data.counts ? { ...r, recon_counts: data.counts } : r,
+    );
+  }, [id]);
+
+  // bảng URLs + params + class (ticket #9) — nguồn mục tiêu của Detection Phase
+  const loadUrls = useCallback(async () => {
+    const res = await fetch(`/api/runs/${id}/urls`);
+    if (!res.ok) return;
+    const data = await res.json();
+    setUrls(data.items ?? []);
     setRun((r) =>
       r && data.counts ? { ...r, recon_counts: data.counts } : r,
     );
@@ -141,12 +164,13 @@ export default function RunDetailPage() {
       load().then(setRun).catch(() => {}); // nạp lại chi tiết (tool executions, finished_at)
       loadAudit().catch(() => {});
       loadAssets().catch(() => {});
+      loadUrls().catch(() => {});
     });
     es.onerror = () => {
       es.close();
       if (!doneRef.current) setTimeout(openStream, 2000);
     };
-  }, [id, load, loadAudit, loadAssets]);
+  }, [id, load, loadAudit, loadAssets, loadUrls]);
 
   useEffect(() => {
     let cancelled = false;
@@ -173,10 +197,14 @@ export default function RunDetailPage() {
   const finished = run?.status === "completed" || run?.status === "failed";
   useEffect(() => {
     loadAssets().catch(() => {});
+    loadUrls().catch(() => {});
     if (finished) return;
-    const t = setInterval(() => loadAssets().catch(() => {}), 3000);
+    const t = setInterval(() => {
+      loadAssets().catch(() => {});
+      loadUrls().catch(() => {});
+    }, 3000);
     return () => clearInterval(t);
-  }, [finished, loadAssets]);
+  }, [finished, loadAssets, loadUrls]);
 
   // tự trượt xuống dòng log mới nhất
   useEffect(() => {
@@ -196,7 +224,9 @@ export default function RunDetailPage() {
     );
   if (!run) return null;
 
-  const counts = run.recon_counts ?? { subdomains: 0, live_hosts: 0, open_ports: 0 };
+  const counts =
+    run?.recon_counts ??
+    { subdomains: 0, live_hosts: 0, open_ports: 0, urls: 0, urls_classed: 0 };
 
   return (
     <main className="page wide">
@@ -346,6 +376,60 @@ export default function RunDetailPage() {
                 <td className="note">{a.ip?.length ? a.ip.join(", ") : "—"}</td>
                 <td className="note">{a.ports?.length ? a.ports.join(", ") : "—"}</td>
                 <td className="note">{a.sources.join(", ")}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {/* ── URLs + params — nguồn Detection Phase (ticket #9) ── */}
+      <h2 className="section-title">
+        URLs + params (katana · gau/waymore · gf){" "}
+        {!finished && <span className="badge info">đang chạy…</span>}
+      </h2>
+      <p className="badges">
+        <span className={`badge ${counts.urls > 0 ? "ok" : ""}`}>
+          {counts.urls} URL
+        </span>
+        <span className={`badge ${counts.urls_classed > 0 ? "ok" : ""}`}>
+          {counts.urls_classed} có nhãn class
+        </span>
+      </p>
+      {urls.length === 0 ? (
+        <p className="meta">Chưa có URL nào (crawl + lịch sử đã dedupe).</p>
+      ) : (
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>URL</th>
+              <th>Params</th>
+              <th>Class (gf)</th>
+              <th>Nguồn</th>
+            </tr>
+          </thead>
+          <tbody>
+            {urls.map((u) => (
+              <tr key={u.url}>
+                <td>
+                  <a className="plink" href={u.url} target="_blank" rel="noreferrer">
+                    <code>{u.url}</code>
+                  </a>
+                </td>
+                <td className="note">
+                  {u.params.length ? u.params.join(", ") : "—"}
+                </td>
+                <td>
+                  {u.classes.length ? (
+                    u.classes.map((c) => (
+                      <span key={c} className="badge info" style={{ marginRight: 4 }}>
+                        {c}
+                      </span>
+                    ))
+                  ) : (
+                    "—"
+                  )}
+                </td>
+                <td className="note">{u.sources.join(", ")}</td>
               </tr>
             ))}
           </tbody>

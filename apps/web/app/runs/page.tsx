@@ -19,6 +19,7 @@ type Run = {
   finished_at: string | null;
   subdomains: number;
   live_hosts: number;
+  urls: number;
 };
 
 export default function RunsPage() {
@@ -80,6 +81,7 @@ export default function RunsPage() {
             <th>Status</th>
             <th>Subdomain</th>
             <th>Live host</th>
+            <th>URL</th>
             <th>Rate limit</th>
             <th>Header định danh</th>
             <th>Bắt đầu</th>
@@ -88,7 +90,7 @@ export default function RunsPage() {
         </thead>
         <tbody>
           {loading && (
-            <tr><td colSpan={9}>Đang tải…</td></tr>
+            <tr><td colSpan={10}>Đang tải…</td></tr>
           )}
           {!loading && items.length === 0 && (
             <tr>
@@ -122,6 +124,11 @@ export default function RunsPage() {
               <td>
                 <span className={`badge ${r.live_hosts > 0 ? "ok" : ""}`}>
                   {r.live_hosts}
+                </span>
+              </td>
+              <td>
+                <span className={`badge ${r.urls > 0 ? "ok" : ""}`}>
+                  {r.urls}
                 </span>
               </td>
               <td>{r.rate_limit_rps ? `${r.rate_limit_rps} req/s` : "—"}</td>

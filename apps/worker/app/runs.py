@@ -153,7 +153,9 @@ async def list_runs(pool: asyncpg.Pool, status: str | None, limit: int) -> list[
                    (SELECT count(*) FROM recon_assets ra
                     WHERE ra.run_id = r.id) AS subdomains,
                    (SELECT count(*) FROM recon_assets ra
-                    WHERE ra.run_id = r.id AND ra.is_live) AS live_hosts
+                    WHERE ra.run_id = r.id AND ra.is_live) AS live_hosts,
+                   (SELECT count(*) FROM recon_urls ru
+                    WHERE ru.run_id = r.id) AS urls
             FROM runs r
             JOIN programs pr ON pr.id = r.program_id
             JOIN platforms pl ON pl.id = pr.platform_id

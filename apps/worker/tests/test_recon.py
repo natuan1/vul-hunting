@@ -24,6 +24,7 @@ from app.recon import (
 )
 from app.scope_validator import check_target
 from app.tools import TargetBlockedError, ToolResult
+from fakes import FakePool, FakeRunner
 
 SNAPSHOT = [
     {"asset_identifier": "*.example.com", "asset_type": "WILDCARD"},
@@ -131,59 +132,7 @@ def test_build_httpx_targets_cổng_mở_thành_host_port_không_có_cổng_thì
     assert targets == ["a.example.com:80", "a.example.com:443", "b.example.com"]
 
 
-# ── pipeline với tool giả ──
-
-
-class FakeRunner:
-    """Tool runner giả: map (tool, args) → (exit_code, stdout, stderr), ghi lại
-    mọi lần gọi để test âm tính kiểm tra request không lọt ra ngoài."""
-
-    def __init__(self, outputs: dict[str, str]):
-        self.outputs = outputs  # tool → stdout
-        self.calls: list[tuple[str, list[str], str | None]] = []
-
-    async def __call__(
-        self, tool: str, args: list[str], stdin: str | None = None,
-        docker_args: list[str] | None = None,
-    ):
-        self.calls.append((tool, args, stdin))
-        self.docker_calls = getattr(self, "docker_calls", [])
-        self.docker_calls.append(docker_args)
-        return ToolResult(0, self.outputs.get(tool, ""), "")
-
-
-class FakeConn:
-    def __init__(self, parent):
-        self.parent = parent
-
-    async def execute(self, sql, *params):
-        self.parent.executes.append((sql.strip().split()[0].lower(), sql, params))
-
-    async def fetchval(self, sql, *params):
-        self.parent.executes.append(("fetchval", sql, params))
-        return next(self.parent.ids)  # id tool_executions tăng dần
-
-    async def fetchrow(self, sql, *params):
-        self.parent.executes.append(("fetchrow", sql, params))
-        return {"count": 0}
-
-    async def fetch(self, sql, *params):
-        return []
-
-
-class FakePool:
-    def __init__(self):
-        self.executes = []
-        self.ids = iter(range(1, 10_000))
-
-    def acquire(self):
-        return self
-
-    async def __aenter__(self):
-        return FakeConn(self)
-
-    async def __aexit__(self, *exc):
-        return False
+# ── pipeline với tool giả (doubles dùng chung ở fakes.py) ──
 
 
 def _audit_rows(pool: FakePool):
@@ -213,7 +162,7 @@ RUN_ROW = {
 
 
 @pytest.mark.asyncio
-async def test_pipeline_chạy_đủ_chuỗi_5_tool_theo_thứ_tự():
+async def test_pipeline_chạy_đủ_chuỗi_tool_theo_thứ_tự():
     runner = FakeRunner(
         {
             "subfinder": "a.example.com\nb.example.com\n",
@@ -229,9 +178,12 @@ async def test_pipeline_chạy_đủ_chuỗi_5_tool_theo_thứ_tự():
     pool = FakePool()
     summary = await run_recon_phase(pool, RUN_ROW, tool_runner=runner)
 
-    # subfinder/amass chạy trên TỪNG domain gốc, rồi dnsx → naabu → httpx
+    # subfinder/amass chạy trên TỪNG domain gốc, dnsx → naabu → httpx, rồi
+    # giai đoạn 2 (ticket #9): katana → gau/waymore theo domain gốc → gf-slice
     assert [t for t, _, _ in runner.calls] == [
-        "subfinder", "subfinder", "amass", "amass", "dnsx", "naabu", "httpx",
+        "subfinder", "subfinder", "amass", "amass",
+        "dnsx", "naabu", "httpx",
+        "katana", "gau", "gau", "waymore", "waymore", "gf-slice",
     ]
     # 3 subdomain từ discovery + 1 seed là asset URL tường minh (app.other.com)
     assert summary["subdomains"] == 4
@@ -316,8 +268,12 @@ async def test_pipeline_tool_exit_khác_0_không_làm_chết_chuỗi():
     summary = await run_recon_phase(pool, RUN_ROW, tool_runner=runner)
     # a.example.com từ amass + seed app.other.com = 2 host trong Scope
     assert summary["subdomains"] == 2
+    # httpx không xác nhận live host nào → không có katana/gf-slice,
+    # nhưng gau/waymore vẫn thu URL lịch sử theo domain gốc
     assert [t for t, _, _ in runner.calls] == [
-        "subfinder", "subfinder", "amass", "amass", "dnsx", "naabu", "httpx",
+        "subfinder", "subfinder", "amass", "amass",
+        "dnsx", "naabu", "httpx",
+        "gau", "gau", "waymore", "waymore",
     ]
 
 

@@ -316,6 +316,27 @@ async def list_run_assets(
     return await recon.list_assets(pool, run_id, limit)
 
 
+@app.get("/runs/{run_id}/urls")
+async def list_run_urls(
+    run_id: int,
+    limit: int = Query(500, ge=1, le=5000),
+    classed: bool | None = Query(None),
+) -> dict:
+    """Bảng URLs + params + nhãn class từ gf (ticket #9) — nguồn mục tiêu của
+    Detection Phase; truy được theo Run (và qua Run là theo Program)."""
+    assert pool is not None
+    return await recon.list_urls(pool, run_id, limit, classed)
+
+
+@app.get("/programs/{program_id}/urls")
+async def list_program_urls(
+    program_id: int, limit: int = Query(500, ge=1, le=5000)
+) -> dict:
+    """URL của mọi Run thuộc Program (ticket #9) — truy theo Program."""
+    assert pool is not None
+    return await recon.list_program_urls(pool, program_id, limit)
+
+
 @app.get("/runs/{run_id}/logs")
 async def get_run_logs(run_id: int, after: int = Query(0, ge=0)) -> dict:
     """Log mới kể từ `after` (id cuối đã thấy) — fallback poll khi SSE không dùng được."""

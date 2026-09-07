@@ -23,5 +23,10 @@ class Settings:
     # Rỗng = không mount, amass chỉ harvest từ stdout.
     recon_volume: str = os.environ.get("RECON_VOLUME", "")
 
+    # (ticket #9, tuỳ chọn) AlienVault OTX — truyền vào container waymore khi có.
+    # Không có key vẫn chạy được: gau/waymore lấy được URL lịch sử từ
+    # Common Crawl + Wayback (OTX endpoint công khai dùng keyless).
+    otx_api_key: str = os.environ.get("OTX_API_KEY", "")
+
 
 settings = Settings()

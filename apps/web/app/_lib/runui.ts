@@ -23,3 +23,40 @@ export function decisionLabel(decision: string): string {
   if (decision === "blocked_non_prod") return "chặn (non-prod)";
   return "chặn (ngoài Scope)";
 }
+
+// ── Candidate / Findings (ticket #10) ──
+
+export type Candidate = {
+  id: number;
+  run_id: number;
+  target: string;
+  class: string;
+  param: string;
+  template_id: string;
+  title: string | null;
+  severity: string;
+  matcher_name: string | null;
+  status: string;
+  evidence_path: string | null;
+  first_seen: string;
+};
+
+export function severityBadgeClass(severity: string): string {
+  if (severity === "critical" || severity === "high") return "badge down";
+  if (severity === "low") return "badge info";
+  return "badge"; // medium / info
+}
+
+export function candidateStatusBadgeClass(status: string): string {
+  if (status === "verified") return "badge ok";
+  if (status === "rejected") return "badge down";
+  if (status === "verifying") return "badge";
+  return "badge info"; // new
+}
+
+export function candidateStatusLabel(status: string): string {
+  if (status === "verifying") return "đang xác minh";
+  if (status === "verified") return "đã xác minh";
+  if (status === "rejected") return "loại bỏ";
+  return "mới";
+}

@@ -90,6 +90,7 @@ type ReconCounts = {
   open_ports: number;
   urls: number;
   urls_classed: number;
+  candidates: number;
 };
 
 export default function RunDetailPage() {
@@ -226,7 +227,14 @@ export default function RunDetailPage() {
 
   const counts =
     run?.recon_counts ??
-    { subdomains: 0, live_hosts: 0, open_ports: 0, urls: 0, urls_classed: 0 };
+    {
+      subdomains: 0,
+      live_hosts: 0,
+      open_ports: 0,
+      urls: 0,
+      urls_classed: 0,
+      candidates: 0,
+    };
 
   return (
     <main className="page wide">
@@ -434,6 +442,25 @@ export default function RunDetailPage() {
             ))}
           </tbody>
         </table>
+      )}
+
+      {/* ── Candidate — Detection Phase (ticket #10) ── */}
+      <h2 className="section-title">
+        Candidate (nuclei){" "}
+        {!finished && <span className="badge info">đang chạy…</span>}
+      </h2>
+      <p className="badges">
+        <span className={`badge ${counts.candidates > 0 ? "ok" : ""}`}>
+          {counts.candidates} Candidate
+        </span>
+        <a className="btn" href={`/findings?run_id=${run.id}`}>
+          Xem Findings →
+        </a>
+      </p>
+      {counts.candidates === 0 && (
+        <p className="meta">
+          Chưa có Candidate nào — nuclei quét live host + URL đã phân loại class.
+        </p>
       )}
 
       {/* ── Audit — Scope Validator ── */}

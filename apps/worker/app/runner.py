@@ -13,7 +13,7 @@ import logging
 
 import asyncpg
 
-from . import jobqueue, recon
+from . import detect, jobqueue, recon
 from .tools import add_log, clear_artifacts
 
 log = logging.getLogger("runner")
@@ -94,7 +94,10 @@ async def execute_run(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
 
     heartbeat_task = asyncio.create_task(_heartbeat_loop(pool, job["id"]))
     try:
-        summary = await recon.run_recon_phase(pool, run)
+        recon_summary = await recon.run_recon_phase(pool, run)
+        # Detection Phase (ticket #10) chạy ngay sau Recon trong cùng Run —
+        # recon cho bề mặt (live host + URL đã phân loại class), nuclei chọt
+        detection_summary = await detect.run_detection_phase(pool, run)
     finally:
         heartbeat_task.cancel()
         await asyncio.gather(heartbeat_task, return_exceptions=True)
@@ -106,9 +109,11 @@ async def execute_run(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
     await add_log(
         pool,
         run_id,
-        f"Run hoàn tất: {summary['subdomains']} subdomain · {summary['live_hosts']} live host · "
-        f"{summary['urls']} URL ({summary['urls_classed']} có nhãn class) · "
-        f"{summary['blocked']} target bị Scope Validator chặn",
+        f"Run hoàn tất: {recon_summary['subdomains']} subdomain · "
+        f"{recon_summary['live_hosts']} live host · "
+        f"{recon_summary['urls']} URL ({recon_summary['urls_classed']} có nhãn class) · "
+        f"{detection_summary['candidates']} Candidate · "
+        f"{recon_summary['blocked'] + detection_summary['blocked']} target bị Scope Validator chặn",
     )
     log.info("run %d hoàn tất", run_id)
 

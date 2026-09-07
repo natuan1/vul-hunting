@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import audit, hermes_client, jobqueue, recon, runner, runs, summary, sync
+from . import audit, detect, hermes_client, jobqueue, recon, runner, runs, summary, sync
 from .config import settings
 from .db import run_migrations
 
@@ -335,6 +335,65 @@ async def list_program_urls(
     """URL của mọi Run thuộc Program (ticket #9) — truy theo Program."""
     assert pool is not None
     return await recon.list_program_urls(pool, program_id, limit)
+
+
+# ─────────────── Detection: Candidate + Findings (ticket #10) ───────────────
+
+
+class CandidateStatusRequest(BaseModel):
+    status: str  # new | verifying | verified | rejected
+
+
+@app.get("/candidates")
+async def list_candidates(
+    run_id: int | None = None,
+    status: str | None = None,
+    class_: str | None = Query(None, alias="class"),
+    severity: str | None = None,
+    limit: int = Query(200, ge=1, le=1000),
+) -> dict:
+    """Findings screen: list Candidate + bộ đếm lifecycle, filter theo
+    Run/status/class/severity."""
+    assert pool is not None
+    try:
+        return await detect.list_candidates(
+            pool, run_id, status, class_, severity, limit
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.get("/candidates/{candidate_id}")
+async def get_candidate(candidate_id: int) -> dict:
+    assert pool is not None
+    candidate = await detect.get_candidate(pool, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="candidate không tồn tại")
+    return candidate
+
+
+@app.get("/candidates/{candidate_id}/evidence")
+async def get_candidate_evidence(candidate_id: int) -> dict:
+    """Evidence viewer: nội dung file JSON (raw request/response, template,
+    matcher) từ volume — 404 nếu Candidate/evidence không tồn tại."""
+    assert pool is not None
+    evidence = await detect.read_evidence(pool, candidate_id)
+    if evidence is None:
+        raise HTTPException(status_code=404, detail="evidence không tồn tại")
+    return evidence
+
+
+@app.post("/candidates/{candidate_id}/status")
+async def set_candidate_status(candidate_id: int, req: CandidateStatusRequest) -> dict:
+    """Chuyển lifecycle của Candidate (new → verifying → verified/rejected)."""
+    assert pool is not None
+    try:
+        result = await detect.set_status(pool, candidate_id, req.status)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="candidate không tồn tại")
+    return result
 
 
 @app.get("/runs/{run_id}/logs")

@@ -14,6 +14,7 @@ lần chạy tool. Cơ chế an toàn kế thừa từ ticket #6/#7 giữ nguyê
 """
 
 import asyncio
+import json
 import logging
 import shlex
 import shutil
@@ -43,6 +44,48 @@ MAX_LINE_CHARS = 2_000
 
 class TargetBlockedError(Exception):
     """Scope Validator chặn target — tool nhận lỗi này tường minh."""
+
+
+def jsonl_lines(stdout: str) -> list[dict]:
+    """Trích các dòng JSON hợp lệ (mỗi dòng 1 object) từ stdout của tool."""
+    out: list[dict] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
+
+
+async def filter_scope(
+    pool: asyncpg.Pool, ctx: "ToolContext", targets: list[str], tool: str
+) -> tuple[list[str], int]:
+    """Lọc danh sách target qua Scope Validator theo HOST — mỗi host duy nhất
+    xuất hiện 1 lần trong audit. Trả (target được phép, số target bị chặn);
+    target bị chặn đều có audit log (fail-closed của ctx.validate giữ nguyên)."""
+    hosts: list[str] = []
+    seen: set[str] = set()
+    for t in targets:
+        h = target_host(t)
+        if h and h not in seen:
+            seen.add(h)
+            hosts.append(h)
+    ok_hosts: set[str] = set()
+    blocked = 0
+    for h in hosts:
+        try:
+            await ctx.validate(pool, h, tool=tool)
+        except TargetBlockedError as exc:
+            blocked += 1
+            await add_log(pool, ctx.run_id, f"BLOCKED: {exc}", level="error")
+            continue
+        ok_hosts.add(h)
+    return [t for t in targets if target_host(t) in ok_hosts], blocked
 
 
 @dataclass

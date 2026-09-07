@@ -20,6 +20,7 @@ export default function RootLayout({
             <a href="/">Trạng thái</a>
             <a href="/programs">Programs</a>
             <a href="/runs">Runs</a>
+            <a href="/findings">Findings</a>
             <a href="/audit">Audit</a>
           </nav>
         </header>

@@ -28,5 +28,16 @@ class Settings:
     # Common Crawl + Wayback (OTX endpoint công khai dùng keyless).
     otx_api_key: str = os.environ.get("OTX_API_KEY", "")
 
+    # evidence file JSON của Candidate (ticket #10) — TÁCH KHỎI artifacts_dir vì
+    # artifacts bị xoá mỗi attempt còn evidence phải sống qua retry
+    evidence_dir: str = os.environ.get("EVIDENCE_DIR", "/data/evidence")
+
+    # nuclei (ticket #10): templates baked sẵn trong tooling image (không tải
+    # lúc chạy); cap số target mỗi Run để giữ nhịp "điều độ"
+    nuclei_templates_dir: str = os.environ.get(
+        "NUCLEI_TEMPLATES_DIR", "/home/tooler/nuclei-templates"
+    )
+    detection_max_targets: int = int(os.environ.get("DETECTION_MAX_TARGETS", "300"))
+
 
 settings = Settings()

@@ -26,9 +26,14 @@ ARG KATANA_VERSION=1.7.0
 ARG GAU_VERSION=2.2.4
 ARG WAYMORE_VERSION=8.9
 ARG GF_PATTERNS_COMMIT=f686f06ae647726578920084c894100d702496cc
+ARG NUCLEI_VERSION=3.11.1
+# checksum sha256 của tarball nuclei-templates theo tag — lấy từ checksums.txt
+# chính thức của release templates (asset tar.gz không attach nhưng checksum có)
+ARG NUCLEI_TEMPLATES_VERSION=10.4.8
+ARG NUCLEI_TEMPLATES_SHA256=53ae80d9bcfff638fbff62c4b730c436564b6bf5e05cf4f86a7eefe37c7ecc47
 
 LABEL org.opencontainers.image.title="vulhunt-tooling" \
-      org.opencontainers.image.description="Recon CLI tools: subfinder/amass/dnsx/naabu/httpx/katana/gau/waymore/gf" \
+      org.opencontainers.image.description="Recon + detection CLI tools: subfinder/amass/dnsx/naabu/httpx/katana/gau/waymore/gf/nuclei" \
       org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update \
@@ -107,10 +112,28 @@ RUN curl --retry 3 --retry-delay 2 -sfL "https://github.com/1ndianl33t/Gf-Patter
 COPY gf-slice /usr/local/bin/gf-slice
 RUN chmod 755 /usr/local/bin/gf-slice
 
+# ── nuclei (ticket #10): detection engine — checksums file dùng dấu gạch ngang ──
+RUN curl --retry 3 --retry-delay 2 -sfL "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_${TARGETARCH}.zip" -o "/tmp/nuclei_${NUCLEI_VERSION}_linux_${TARGETARCH}.zip" \
+ && curl --retry 3 --retry-delay 2 -sfL "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_checksums.txt" -o /tmp/nuclei.sha256 \
+ && (cd /tmp && grep "nuclei_${NUCLEI_VERSION}_linux_${TARGETARCH}.zip" nuclei.sha256 | sha256sum -c -) \
+ && unzip -o "/tmp/nuclei_${NUCLEI_VERSION}_linux_${TARGETARCH}.zip" nuclei -d /usr/local/bin \
+ && rm /tmp/nuclei_*.zip /tmp/nuclei.sha256
+
+# ── nuclei-templates (ticket #10): bake sẵn vào image, nuclei chạy với
+# -t /home/tooler/nuclei-templates (không tải template lúc quét). Tarball theo
+# tag của repo templates, verify bằng checksum chính thức của release.
+RUN curl --retry 5 --retry-delay 3 -sfL "https://github.com/projectdiscovery/nuclei-templates/archive/refs/tags/v${NUCLEI_TEMPLATES_VERSION}.tar.gz" -o /tmp/nuclei-templates.tar.gz \
+ && echo "${NUCLEI_TEMPLATES_SHA256}  /tmp/nuclei-templates.tar.gz" | sha256sum -c - \
+ && mkdir -p /home/tooler/nuclei-templates /tmp/nuclei-templates \
+ && tar -xzf /tmp/nuclei-templates.tar.gz -C /tmp/nuclei-templates --strip-components=1 \
+ && mv /tmp/nuclei-templates/* /home/tooler/nuclei-templates/ \
+ && chmod -R a+rX /home/tooler/nuclei-templates \
+ && rm -rf /tmp/nuclei-templates /tmp/nuclei-templates.tar.gz
+
 # thư mục làm việc ghi được (amass v4/v5 cần nơi lưu graph db tạm trong container,
-# waymore lần chạy đầu ghi config.yml vào ~/.config/waymore)
+# waymore lần chạy đầu ghi config.yml vào ~/.config/waymore, nuclei cần ~/.config)
 RUN useradd --create-home --shell /bin/bash tooler \
- && mkdir -p /home/tooler/.config/amass /home/tooler/.config/waymore /home/tooler/.local/share \
+ && mkdir -p /home/tooler/.config/amass /home/tooler/.config/waymore /home/tooler/.config/nuclei /home/tooler/.local/share \
  && chown -R tooler:tooler /home/tooler
 USER tooler
 WORKDIR /home/tooler

@@ -37,6 +37,8 @@ from .tools import (
     add_log,
     build_context,
     execute_tool,
+    filter_scope,
+    jsonl_lines,
 )
 
 log = logging.getLogger("recon")
@@ -48,21 +50,6 @@ _HOSTNAME_RE = re.compile(r"^[a-z0-9._*-]+$")
 # dòng URL hợp lệ cho output của katana/gau/waymore (1 URL/dòng)
 _URL_LINE_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 
-
-def _jsonl_lines(stdout: str) -> list[dict]:
-    """Trích các dòng JSON hợp lệ (mỗi dòng 1 object) từ stdout của tool."""
-    out: list[dict] = []
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(obj, dict):
-            out.append(obj)
-    return out
 
 DISCOVERY_TOOLS = ("subfinder", "amass")
 PROBE_TOOLS = ("dnsx", "naabu", "httpx")
@@ -178,7 +165,7 @@ def parse_host_lines(stdout: str) -> list[str]:
         if not line:
             continue
         if line.startswith("{"):
-            for obj in _jsonl_lines(line):
+            for obj in jsonl_lines(line):
                 host = obj.get("host")
                 if host:
                     hosts.append(str(host))
@@ -194,7 +181,7 @@ def parse_dnsx_json(stdout: str) -> dict[str, dict]:
     lớp subdomain takeover sau này.
     """
     out: dict[str, dict] = {}
-    for obj in _jsonl_lines(stdout):
+    for obj in jsonl_lines(stdout):
         host = obj.get("host")
         if not host:
             continue
@@ -209,7 +196,7 @@ def parse_dnsx_json(stdout: str) -> dict[str, dict]:
 def parse_naabu_json(stdout: str) -> dict[str, list[int]]:
     """naabu -json → {host: [port]}"""
     ports: dict[str, list[int]] = {}
-    for obj in _jsonl_lines(stdout):
+    for obj in jsonl_lines(stdout):
         host = obj.get("host")
         port = obj.get("port")
         if not host or not port:
@@ -225,7 +212,7 @@ def parse_naabu_json(stdout: str) -> dict[str, list[int]]:
 def parse_httpx_json(stdout: str) -> list[dict]:
     """httpx -json → [{host, url, status_code, title}]"""
     out: list[dict] = []
-    for obj in _jsonl_lines(stdout):
+    for obj in jsonl_lines(stdout):
         host = obj.get("host")
         if not host:
             continue
@@ -317,7 +304,7 @@ def parse_url_lines(stdout: str) -> list[str]:
 def parse_gf_slice_json(stdout: str) -> dict[str, list[str]]:
     """Output JSONL của gf-slice → {url: [class]}."""
     out: dict[str, list[str]] = {}
-    for obj in _jsonl_lines(stdout):
+    for obj in jsonl_lines(stdout):
         url = obj.get("url")
         if not url:
             continue
@@ -427,24 +414,19 @@ async def run_url_phase(
     blocked = 0
 
     async def scope_ok(raw_urls: list[str], tool: str) -> list[str]:
-        """Lọc URL qua Scope Validator (theo host — mỗi host duy nhất 1 lần),
-        trả về URL đã chuẩn hoá + dedupe thuộc Scope."""
+        """Lọc URL qua Scope Validator (theo host — mỗi host duy nhất 1 lần,
+        qua tools.filter_scope), trả về URL đã chuẩn hoá + dedupe thuộc Scope."""
         nonlocal blocked
-        urls: dict[str, None] = {}  # dedupe giữ thứ tự
+        urls: list[str] = []
+        seen: set[str] = set()
         for raw in raw_urls:
             url = normalize_url(raw)
-            if url:
-                urls.setdefault(url)
-        ok_hosts: set[str] = set()
-        for host in unique_hosts([target_host(u) for u in urls]):
-            try:
-                await ctx.validate(pool, host, tool=tool)
-            except TargetBlockedError as exc:
-                blocked += 1
-                await add_log(pool, run_id, f"BLOCKED: {exc}", level="error")
-                continue
-            ok_hosts.add(host)
-        return [u for u in urls if target_host(u) in ok_hosts]
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
+        allowed, n = await filter_scope(pool, ctx, urls, tool)
+        blocked += n
+        return allowed
 
     def merge(urls: list[str], source: str) -> None:
         for url in urls:
@@ -707,7 +689,8 @@ SELECT count(*) AS subdomains,
        coalesce(sum(array_length(ports, 1)), 0) AS open_ports,
        (SELECT count(*) FROM recon_urls WHERE run_id = $1) AS urls,
        (SELECT count(*) FROM recon_urls
-        WHERE run_id = $1 AND array_length(classes, 1) > 0) AS urls_classed
+        WHERE run_id = $1 AND array_length(classes, 1) > 0) AS urls_classed,
+       (SELECT count(*) FROM candidates WHERE run_id = $1) AS candidates
 FROM recon_assets WHERE run_id = $1
 """
 
@@ -717,6 +700,7 @@ _COUNTS_EMPTY = {
     "open_ports": 0,
     "urls": 0,
     "urls_classed": 0,
+    "candidates": 0,
 }
 
 

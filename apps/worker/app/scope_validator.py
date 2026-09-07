@@ -55,12 +55,18 @@ def check_target(
     raw_target: str,
     snapshot: list[dict],
     allow_non_prod: bool = False,
+    allow_wildcard_base: bool = False,
 ) -> ScopeDecision:
     """Đối chiếu target với Scope snapshot của Run.
 
     Thứ tự: match tường minh (exact) → match wildcard → flag non-prod
     (chỉ khi match qua wildcard — asset tường minh trong scope thì đương nhiên
     được phép, kể cả mang nhãn non-prod). Ngoài tất cả → chặn.
+
+    `allow_wildcard_base`: cho phép đúng BASE của wildcard (vd example.com của
+    *.example.com) — chỉ dùng cho passive discovery (subfinder/amass tra cứu
+    dữ liệu công khai về không gian subdomain mà wildcard đã khai báo), KHÔNG
+    dùng cho probe chủ động (naabu/httpx vẫn phải bám asset tường minh).
 
     Hạn chế ghi nhận: Asset URL có đường dẫn (vd https://example.com/api)
     hiện match theo HOST — ràng buộc path sẽ xử lý khi có tool thật
@@ -99,6 +105,13 @@ def check_target(
                 f"non-production ({hit}.) — mặc định không auto-test",
             )
         return ScopeDecision("allowed", f"trong Scope (match wildcard *.{wildcard_hit})")
+
+    if host in wildcards and allow_wildcard_base:
+        return ScopeDecision(
+            "allowed",
+            f"root của wildcard *.{host} — passive discovery trên không gian "
+            f"subdomain đã khai báo",
+        )
 
     return ScopeDecision(
         "blocked_out_of_scope", f"{host} không thuộc Scope của Run"

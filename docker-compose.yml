@@ -1,3 +1,5 @@
+name: vul-hunting
+
 services:
   postgres:
     image: postgres:18-alpine
@@ -40,6 +42,15 @@ services:
       retries: 10
       start_period: 60s
 
+  # Image tooling: subfinder/amass/dnsx/naabu/httpx pin version (ticket #8) —
+  # build xong là xong (entrypoint true); worker chạy tool từ image này qua
+  # docker.sock (sibling container, mô hình ADR-0003)
+  tooling:
+    build: ./docker/tooling
+    image: vulhunt-tooling:latest
+    entrypoint: ["true"]
+    restart: "no"
+
   worker:
     build: ./apps/worker
     environment:
@@ -50,11 +61,19 @@ services:
       HACKERONE_API_TOKEN: ${HACKERONE_API_TOKEN}
       INTIGRITI_API_TOKEN: ${INTIGRITI_API_TOKEN}
       INTIGRITI_USERNAME: ${INTIGRITI_USERNAME:-}
+      TOOLING_IMAGE: vulhunt-tooling:latest
+      ARTIFACTS_DIR: /data/artifacts
+      RECON_VOLUME: vul-hunting_recon_data
     ports:
       - "${WORKER_PORT:-8000}:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - recon_data:/data
     depends_on:
       postgres:
         condition: service_healthy
+      tooling:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
       interval: 10s
@@ -81,3 +100,4 @@ services:
 volumes:
   pgdata:
   hermes_data:
+  recon_data:

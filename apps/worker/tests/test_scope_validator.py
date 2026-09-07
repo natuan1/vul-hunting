@@ -114,3 +114,25 @@ def test_nhãn_non_prod_ở_giữa_cũng_bị_flag():
     d = check_target("api.dev.1password.com", SCOPE)
     assert d.decision == BLOCKED_NON_PROD
     assert d.allowed is False
+
+
+# ── allow_wildcard_base: passive discovery trên base của wildcard ──
+
+
+def test_wildcard_base_chỉ_được_phép_khi_bật_flag():
+    assert dec("1password.com").decision == BLOCKED_SCOPE  # mặc định vẫn chặn apex
+    d = check_target("1password.com", SCOPE, allow_wildcard_base=True)
+    assert d.decision == ALLOWED
+    assert "passive" in d.reason
+
+
+def test_wildcard_base_flag_không_mở_cho_host_khác():
+    assert (
+        check_target("1password.com.evil.io", SCOPE, allow_wildcard_base=True).decision
+        == BLOCKED_SCOPE
+    )
+
+
+def test_url_asset_tường_minh_không_ăn_flag_wildcard_base():
+    # agilebits.com là asset tường minh — allowed kể cả không flag
+    assert dec("agilebits.com").decision == ALLOWED

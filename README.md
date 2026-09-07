@@ -22,6 +22,7 @@ Key API (OpenRouter, HackerOne, Intigriti) đặt trong `.env` — xem `.env.exa
 | `apps/worker` | FastAPI worker — REST API, sync platforms, job queue consumer |
 | `postgres` | Dữ liệu + job queue (ADR-0001) |
 | `hermes` | hermes-agent gateway — AI core (ADR-0002), API server nội bộ :8642 |
+| `docker/tooling` | Image CLI recon: subfinder/amass/dnsx/naabu/httpx (pin version, có checksum) |
 | `config/hermes/` | config.yaml + skills của hermes (mount vào container) |
 
 ## Tính năng hiện có
@@ -29,6 +30,12 @@ Key API (OpenRouter, HackerOne, Intigriti) đặt trong `.env` — xem `.env.exa
 - **Programs** (`/programs`) — sync danh sách program từ HackerOne & Intigriti, filter theo
   platform / bounty / payout tối đa / loại asset / từ khoá (tên, handle, scope), pagination.
   Sync chạy nền, tôn trọng rate limit từng platform, lỗi thì resume từ điểm dừng.
+- **Runs** (`/runs`) — recon thật trên program: chuỗi `subfinder → amass → dnsx → naabu →
+  httpx` chạy trong container ephemeral từ image `docker/tooling` (worker gọi docker qua
+  socket — sibling container). Mọi target đi qua Scope Validator + rate limit + header định
+  danh; subdomain/live host/CNAME lưu DB (`recon_assets`) với bộ đếm tăng dần trên UI;
+  stdout JSONL của từng tool lưu artifact trên volume (`recon_data:/data/artifacts/<run_id>/`),
+  stdout/stderr/exit code/thời gian lưu bảng `tool_executions`.
 
 ## Tài liệu
 

@@ -9,7 +9,7 @@ import json
 
 import asyncpg
 
-from . import jobqueue
+from . import jobqueue, recon
 from .config import settings
 
 # platform slug → (nhãn dùng trong header, getter username từ settings)
@@ -129,12 +129,13 @@ async def get_run(pool: asyncpg.Pool, run_id: int) -> dict | None:
         run["tool_executions"] = [
             dict(r)
             for r in await conn.fetch(
-                "SELECT id, seq, tool, args, status, exit_code, stdout, "
-                "started_at, finished_at FROM tool_executions "
+                "SELECT id, seq, tool, args, status, exit_code, stdout, stderr, "
+                "artifact_path, started_at, finished_at FROM tool_executions "
                 "WHERE run_id = $1 ORDER BY seq",
                 run_id,
             )
         ]
+        run["recon_counts"] = await recon.counts_for(pool, run_id)
     return run
 
 
@@ -148,7 +149,11 @@ async def list_runs(pool: asyncpg.Pool, status: str | None, limit: int) -> list[
                    r.ident_header_name, r.ident_header_value, r.error,
                    r.created_at, r.started_at, r.finished_at,
                    pr.name AS program_name, pr.handle AS program_handle,
-                   pl.slug AS platform
+                   pl.slug AS platform,
+                   (SELECT count(*) FROM recon_assets ra
+                    WHERE ra.run_id = r.id) AS subdomains,
+                   (SELECT count(*) FROM recon_assets ra
+                    WHERE ra.run_id = r.id AND ra.is_live) AS live_hosts
             FROM runs r
             JOIN programs pr ON pr.id = r.program_id
             JOIN platforms pl ON pl.id = pr.platform_id

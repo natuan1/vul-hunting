@@ -67,6 +67,19 @@ async def complete(pool: asyncpg.Pool, job_id: int) -> None:
         )
 
 
+async def heartbeat(pool: asyncpg.Pool, job_id: int) -> None:
+    """Consumer đang giữ job báo hiệu còn sống — đẩy mốc locked_at để job không
+    bị coi là chết giữa chừng (Recon Phase với tool thật chạy dài hơn nhiều so
+    với visibility timeout 60s; thiếu heartbeat thì job bị reclaim và quét
+    TRÙNG target)."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE jobs SET locked_at = now(), updated_at = now() "
+            "WHERE id = $1 AND status = 'running'",
+            job_id,
+        )
+
+
 async def fail(pool: asyncpg.Pool, job: asyncpg.Record, error: str) -> str:
     """Job lỗi: còn lượt → retry (backoff qua run_after); hết lượt → 'dead'.
 

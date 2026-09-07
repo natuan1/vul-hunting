@@ -48,6 +48,7 @@ type RunDetail = {
   started_at: string | null;
   finished_at: string | null;
   tool_executions: ToolExec[];
+  recon_counts: ReconCounts;
 };
 
 type LogLine = { id: number; level: string; message: string; ts: string };
@@ -61,11 +62,31 @@ type AuditEntry = {
   ts: string;
 };
 
+type ReconAsset = {
+  host: string;
+  sources: string[];
+  cname: string | null;
+  ip: string[] | null;
+  ports: number[] | null;
+  is_live: boolean;
+  http_url: string | null;
+  http_status: number | null;
+  http_title: string | null;
+  first_seen: string;
+};
+
+type ReconCounts = {
+  subdomains: number;
+  live_hosts: number;
+  open_ports: number;
+};
+
 export default function RunDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [run, setRun] = useState<RunDetail | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [assets, setAssets] = useState<ReconAsset[]>([]);
   const [error, setError] = useState<string | null>(null);
   const lastIdRef = useRef(0);
   const logBoxRef = useRef<HTMLDivElement | null>(null);
@@ -79,6 +100,17 @@ export default function RunDetailPage() {
       throw new Error(body.detail ?? `HTTP ${res.status}`);
     }
     return (await res.json()) as RunDetail;
+  }, [id]);
+
+  // kết quả recon — poll liên tục để thấy subdomain/live host tăng dần khi chạy
+  const loadAssets = useCallback(async () => {
+    const res = await fetch(`/api/runs/${id}/assets`);
+    if (!res.ok) return;
+    const data = await res.json();
+    setAssets(data.items ?? []);
+    setRun((r) =>
+      r && data.counts ? { ...r, recon_counts: data.counts } : r,
+    );
   }, [id]);
 
   const loadAudit = useCallback(async () => {
@@ -108,12 +140,13 @@ export default function RunDetailPage() {
       setRun((r) => (r ? { ...r, status } : r));
       load().then(setRun).catch(() => {}); // nạp lại chi tiết (tool executions, finished_at)
       loadAudit().catch(() => {});
+      loadAssets().catch(() => {});
     });
     es.onerror = () => {
       es.close();
       if (!doneRef.current) setTimeout(openStream, 2000);
     };
-  }, [id, load, loadAudit]);
+  }, [id, load, loadAudit, loadAssets]);
 
   useEffect(() => {
     let cancelled = false;
@@ -136,6 +169,15 @@ export default function RunDetailPage() {
     };
   }, [load, openStream, loadAudit]);
 
+  // poll kết quả recon — bộ đếm tăng dần trong lúc Run đang chạy
+  const finished = run?.status === "completed" || run?.status === "failed";
+  useEffect(() => {
+    loadAssets().catch(() => {});
+    if (finished) return;
+    const t = setInterval(() => loadAssets().catch(() => {}), 3000);
+    return () => clearInterval(t);
+  }, [finished, loadAssets]);
+
   // tự trượt xuống dòng log mới nhất
   useEffect(() => {
     const box = logBoxRef.current;
@@ -154,7 +196,7 @@ export default function RunDetailPage() {
     );
   if (!run) return null;
 
-  const finished = run.status === "completed" || run.status === "failed";
+  const counts = run.recon_counts ?? { subdomains: 0, live_hosts: 0, open_ports: 0 };
 
   return (
     <main className="page wide">
@@ -235,6 +277,75 @@ export default function RunDetailPage() {
                   {fmtTime(t.started_at)}
                   {t.finished_at && ` → ${new Date(t.finished_at).toLocaleTimeString("vi-VN")}`}
                 </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {/* ── Kết quả Recon Phase ── */}
+      <h2 className="section-title">
+        Kết quả Recon Phase{" "}
+        {!finished && <span className="badge info">đang chạy…</span>}
+      </h2>
+      <p className="badges">
+        <span className={`badge ${counts.subdomains > 0 ? "ok" : ""}`}>
+          {counts.subdomains} subdomain
+        </span>
+        <span className={`badge ${counts.live_hosts > 0 ? "ok" : ""}`}>
+          {counts.live_hosts} live host
+        </span>
+        <span className="badge info">{counts.open_ports} cổng mở</span>
+      </p>
+      {assets.length === 0 ? (
+        <p className="meta">Chưa phát hiện host nào.</p>
+      ) : (
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>Host</th>
+              <th>Live</th>
+              <th>HTTP</th>
+              <th>Tiêu đề</th>
+              <th>CNAME</th>
+              <th>IP</th>
+              <th>Cổng</th>
+              <th>Nguồn</th>
+            </tr>
+          </thead>
+          <tbody>
+            {assets.map((a) => (
+              <tr key={a.host}>
+                <td>
+                  {a.http_url ? (
+                    <a className="plink" href={a.http_url} target="_blank" rel="noreferrer">
+                      <code>{a.host}</code>
+                    </a>
+                  ) : (
+                    <code>{a.host}</code>
+                  )}
+                </td>
+                <td>
+                  {a.is_live ? (
+                    <span className="badge ok">live</span>
+                  ) : (
+                    <span className="badge">—</span>
+                  )}
+                </td>
+                <td>
+                  {a.http_status && (
+                    <span className={`badge ${a.http_status < 400 ? "ok" : "down"}`}>
+                      {a.http_status}
+                    </span>
+                  )}
+                </td>
+                <td className="note">{a.http_title ?? "—"}</td>
+                <td className="note">
+                  {a.cname ? <code>{a.cname}</code> : "—"}
+                </td>
+                <td className="note">{a.ip?.length ? a.ip.join(", ") : "—"}</td>
+                <td className="note">{a.ports?.length ? a.ports.join(", ") : "—"}</td>
+                <td className="note">{a.sources.join(", ")}</td>
               </tr>
             ))}
           </tbody>

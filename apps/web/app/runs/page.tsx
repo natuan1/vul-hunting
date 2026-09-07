@@ -17,6 +17,8 @@ type Run = {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  subdomains: number;
+  live_hosts: number;
 };
 
 export default function RunsPage() {
@@ -76,6 +78,8 @@ export default function RunsPage() {
             <th>Run</th>
             <th>Program</th>
             <th>Status</th>
+            <th>Subdomain</th>
+            <th>Live host</th>
             <th>Rate limit</th>
             <th>Header định danh</th>
             <th>Bắt đầu</th>
@@ -84,11 +88,11 @@ export default function RunsPage() {
         </thead>
         <tbody>
           {loading && (
-            <tr><td colSpan={7}>Đang tải…</td></tr>
+            <tr><td colSpan={9}>Đang tải…</td></tr>
           )}
           {!loading && items.length === 0 && (
             <tr>
-              <td colSpan={7}>
+              <td colSpan={9}>
                 Chưa có Run nào — mở một Program rồi bấm “Chạy Run”.
               </td>
             </tr>
@@ -109,6 +113,16 @@ export default function RunsPage() {
               <td>
                 <span className={statusBadgeClass(r.status)}>{r.status}</span>
                 {r.error && <div className="phandle">{r.error}</div>}
+              </td>
+              <td>
+                <span className={`badge ${r.subdomains > 0 ? "ok" : ""}`}>
+                  {r.subdomains}
+                </span>
+              </td>
+              <td>
+                <span className={`badge ${r.live_hosts > 0 ? "ok" : ""}`}>
+                  {r.live_hosts}
+                </span>
               </td>
               <td>{r.rate_limit_rps ? `${r.rate_limit_rps} req/s` : "—"}</td>
               <td>

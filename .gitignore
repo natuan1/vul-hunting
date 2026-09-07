@@ -34,3 +34,6 @@ config/hermes/skills/.curator_state
 # OS
 .DS_Store
 Thumbs.db
+
+# generated bởi `next build` / `next dev`
+apps/web/next-env.d.ts

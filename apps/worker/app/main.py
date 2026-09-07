@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import audit, hermes_client, jobqueue, runner, runs, summary, sync
+from . import audit, hermes_client, jobqueue, recon, runner, runs, summary, sync
 from .config import settings
 from .db import run_migrations
 
@@ -304,6 +304,16 @@ async def get_run(run_id: int) -> dict:
     if run is None:
         raise HTTPException(status_code=404, detail="run không tồn tại")
     return run
+
+
+@app.get("/runs/{run_id}/assets")
+async def list_run_assets(
+    run_id: int, limit: int = Query(500, ge=1, le=5000)
+) -> dict:
+    """Kết quả Recon Phase (subdomain + live host + CNAME) + bộ đếm — UI poll
+    endpoint này để thấy số lượng tăng dần trong lúc Run chạy."""
+    assert pool is not None
+    return await recon.list_assets(pool, run_id, limit)
 
 
 @app.get("/runs/{run_id}/logs")

@@ -10,6 +10,7 @@ Chạy trong container worker:
 """
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +23,7 @@ from app.verify import (
     decide_verdict,
     inject_param,
     parse_probe,
+    run_redirect_verification,
     write_verify_evidence,
 )
 
@@ -296,3 +298,100 @@ def test_write_verify_evidence_ghi_file_json_đầy_dữ_liệu(tmp_path):
     assert content["verify_session_id"] == 12
     assert content["analysis"]["verdict"] == "verified"
     assert content["analysis"]["diff"]["location"]["poc"] == CANARY
+
+
+# ── pipeline: evidence khi probe chạy mà stdout không parse được ──
+
+
+class _FakePool:
+    """Pool giả: fetchrow trả None (không cần đọc verdict row), execute no-op."""
+
+    def acquire(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, sql, *params):
+        pass
+
+    async def fetchrow(self, sql, *params):
+        return None
+
+
+_CANDIDATE = {
+    "id": 3,
+    "run_id": 7,
+    "class": "redirect",
+    "target": "https://app.other.com/redirect",
+    "param": "next",
+    "status": "new",
+}
+
+
+def _probe_stdout(profile: dict) -> str:
+    return f"{PROBE_MARKER}\n{json.dumps(profile)}\n"
+
+
+def _evidence_content() -> dict:
+    (path,) = Path(config.settings.evidence_dir).rglob("*.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.asyncio
+async def test_probe_đứt_json_evidence_ghi_stdout_thô_của_chính_probe_đó():
+    """Baseline parse được, PoC trả stdout đứt → evidence: baseline vẫn là
+    profile thường; slot poc ghi parse_error với STDOUT THÔ CỦA CHÍNH PoC —
+    không được nhét body/dữ liệu của baseline vào (nhầm nó thì evidence mất
+    đúng thứ cần debug)."""
+    scripts: list[str] = []
+
+    async def probe(script: str, target: str) -> dict:
+        scripts.append(script)
+        if len(scripts) == 1:  # lần 1 = baseline
+            return {
+                "status": "ok", "session_id": 11,
+                "stdout": _probe_stdout({
+                    "url": target, "status": 200, "headers": {},
+                    "content_type": "text/html", "body_length": 0,
+                    "body": "baseline body gốc",
+                }),
+            }
+        return {"status": "ok", "session_id": 12,
+                "stdout": f"{PROBE_MARKER}\n{{json đứt giữa chừng"}
+
+    summary = await run_redirect_verification(_FakePool(), dict(_CANDIDATE), probe=probe)
+    assert summary["verdict"] == "rejected"
+    assert "probe_error" in summary["patterns"]
+
+    content = _evidence_content()
+    assert content["baseline"].get("status") == 200  # baseline parse bình thường
+    assert content["poc"].get("parse_error") is True
+    head = content["poc"].get("stdout_head") or ""
+    assert "đứt" in head  # stdout thô của PoC
+    assert "baseline body gốc" not in head  # KHÔNG phải dữ liệu của baseline
+
+
+@pytest.mark.asyncio
+async def test_cả_hai_probe_đều_đứt_evidence_không_ghi_skipped():
+    """Cả baseline lẫn PoC đều chạy thật nhưng stdout không parse được → hai
+    slot đều parse_error kèm stdout thô TƯƠNG ỨNG — không được ghi 'skipped'
+    (skipped chỉ dành cho probe KHÔNG hề chạy, ví dụ candidate thiếu param)."""
+
+    async def probe(script: str, target: str) -> dict:
+        return {"status": "ok", "session_id": 13, "stdout": "stdout rác không marker"}
+
+    summary = await run_redirect_verification(_FakePool(), dict(_CANDIDATE), probe=probe)
+    assert summary["verdict"] == "rejected"
+    assert "probe_error" in summary["patterns"]
+
+    content = _evidence_content()
+    assert content["baseline"] == {
+        "parse_error": True, "stdout_head": "stdout rác không marker",
+    }
+    assert content["poc"] == {
+        "parse_error": True, "stdout_head": "stdout rác không marker",
+    }

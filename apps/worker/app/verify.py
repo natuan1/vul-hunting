@@ -487,23 +487,23 @@ async def run_redirect_verification(
     base_res = await _run_probe(build_probe_script(baseline_url))
     poc_res = await _run_probe(build_probe_script(poc_url))
 
-    baseline = parse_probe(base_res.get("stdout") or "")
-    poc = parse_probe(poc_res.get("stdout") or "")
+    base_raw = base_res.get("stdout") or ""
+    poc_raw = poc_res.get("stdout") or ""
+    baseline = parse_probe(base_raw)
+    poc = parse_probe(poc_raw)
     if baseline is None or poc is None:
         analysis = RedirectAnalysis(
             patterns=["probe_error"], score=0.0, verdict="rejected",
             reason="Không đọc được profile response từ stdout sandbox (thiếu marker/JSON đứt)",
         )
-        diff_src = (baseline or poc)
     else:
         analysis = analyze_redirect(baseline, poc, payload, threshold)
-        diff_src = None
 
     evidence = write_verify_evidence(run_id, candidate_id, _evidence_record(
         candidate, payload, threshold, analysis,
         baseline, base_res.get("session_id"),
         poc, poc_res.get("session_id"),
-        unparsed=diff_src,
+        baseline_raw=base_raw, poc_raw=poc_raw,
     ))
     base_sid = base_res.get("session_id")
     poc_sid = poc_res.get("session_id")
@@ -530,16 +530,19 @@ def _evidence_record(
     baseline_session_id: int | None,
     poc: ProbeProfile | None,
     poc_session_id: int | None,
-    unparsed: ProbeProfile | None = None,
+    baseline_raw: str = "",
+    poc_raw: str = "",
 ) -> dict:
     """Nội dung file evidence diff — bằng chứng đầy đủ cho Finding/rejected."""
 
-    def _profile_or_parse_error(p: ProbeProfile | None) -> dict:
+    def _profile_or_parse_error(p: ProbeProfile | None, raw: str) -> dict:
         if p is not None:
             return p.to_dict()
-        if unparsed is not None:
-            return {"parse_error": True, "stdout_head": (unparsed.body or "")[:2000]}
-        return {"skipped": True}
+        if raw:
+            # probe chạy thật nhưng stdout không parse được — giữ NGUYÊN stdout
+            # thô của CHÍNH probe đó để debug (không phải dữ liệu probe còn lại)
+            return {"parse_error": True, "stdout_head": raw[:2000]}
+        return {"skipped": True}  # probe không hề chạy (vd: candidate thiếu param)
 
     return {
         "schema": "vulhunt.verify-evidence/1",
@@ -551,8 +554,8 @@ def _evidence_record(
         "param": candidate.get("param"),
         "payload": payload,
         "threshold": threshold,
-        "baseline": _profile_or_parse_error(baseline),
-        "poc": _profile_or_parse_error(poc),
+        "baseline": _profile_or_parse_error(baseline, baseline_raw),
+        "poc": _profile_or_parse_error(poc, poc_raw),
         "baseline_session_id": baseline_session_id,
         "verify_session_id": poc_session_id,
         "analysis": {

@@ -57,7 +57,6 @@ def make_ctx(limiter=None, session_id: int = 42, token: str = "tok") -> EgressCo
     return EgressContext(
         session_id=session_id,
         run_id=7,
-        target="agilebits.com",
         snapshot=SCOPE,
         allow_non_prod=False,
         limiter=limiter,

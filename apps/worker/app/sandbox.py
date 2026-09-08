@@ -193,7 +193,6 @@ async def run_verify_session(
         EgressContext(
             session_id=session_id,
             run_id=run_id,
-            target=host,
             snapshot=snapshot,
             allow_non_prod=bool(run["allow_non_prod"]),
             limiter=ctx.limiter,
@@ -230,6 +229,18 @@ async def run_verify_session(
         if runner is None:
             runner = DockerSandboxRunner()
         result = await runner(spec)
+    except asyncio.CancelledError:
+        # client (hermes) ngắt kết nối giữa chừng — chốt session thay vì kẹt
+        # 'running' mãi trong DB, rồi NÉM TIẾP (không nuốt hành vi huỷ;
+        # container đã do runner tự dọn trong finally của nó)
+        await _finish_session(
+            pool, session_id, status="error",
+            reason="bị huỷ giữa chừng — client ngắt kết nối khi session đang chạy",
+        )
+        await add_log(
+            pool, run_id, f"Sandbox #{session_id}: bị huỷ giữa chừng", level="error"
+        )
+        raise
     except Exception as exc:
         elapsed = time.monotonic() - started
         await _finish_session(pool, session_id, status="error",
@@ -461,7 +472,7 @@ class DockerSandboxRunner:
                 await self._ignore("rm", "-f", spec.container_name)
                 try:
                     out, err_bytes = await asyncio.wait_for(comm, timeout=30.0)
-                except (asyncio.TimeoutError, Exception):
+                except Exception:
                     proc.kill()
                     await proc.wait()
                     out, err_bytes = b"", b""

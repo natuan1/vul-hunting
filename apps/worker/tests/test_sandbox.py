@@ -6,6 +6,8 @@ Chạy trong container worker:
     docker compose exec worker python -m pytest tests/test_sandbox.py -q
 """
 
+import asyncio
+
 import pytest
 
 from app.egress import EgressRegistry, parse_proxy_user, proxy_credentials
@@ -231,6 +233,42 @@ async def test_timeout_clamped_to_max(registry):
         runner=runner, registry=registry,
     )
     assert runner.specs[0].timeout_s <= 600.0
+
+
+class CancellingRunner:
+    """Runner giả: ném CancelledError — mô phỏng client (hermes) ngắt kết nối
+    giữa chừng nên asyncio huỷ task đang chạy verify session."""
+
+    def __init__(self):
+        self.specs: list[SandboxSpec] = []
+
+    async def __call__(self, spec: SandboxSpec) -> SandboxResult:
+        self.specs.append(spec)
+        raise asyncio.CancelledError()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_mid_session_vẫn_chốt_status(registry):
+    """Bị huỷ giữa chừng → session KHÔNG kẹt 'running' mãi trong DB: chốt
+    status 'error' kèm lý do rồi NÉM TIẾP CancelledError (không nuốt hành vi
+    huỷ). Container do runner tự dọn; registry egress phải sạch."""
+    pool = RecordingPool()
+    runner = CancellingRunner()
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_verify_session(
+            pool, RUN, "sleep 100", "agilebits.com", runner=runner, registry=registry
+        )
+
+    finish = [
+        (sql, params)
+        for sql, params in pool.executes
+        if sql.startswith("UPDATE sandbox_sessions")
+    ]
+    assert finish, "session phải được chốt status thay vì kẹt 'running' mãi"
+    assert finish[-1][1][1] == "error"
+    assert "huỷ" in (finish[-1][1][5] or "")
+    assert registry.resolve(runner.specs[0].session_id) is None
 
 
 @pytest.mark.asyncio

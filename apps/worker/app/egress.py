@@ -38,7 +38,6 @@ class EgressContext:
 
     session_id: int
     run_id: int
-    target: str  # host đã chuẩn hoá của verify session (đã qua validator)
     snapshot: list[dict]
     allow_non_prod: bool
     limiter: RateLimiter | None

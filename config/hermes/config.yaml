@@ -42,3 +42,18 @@ command_allowlist:
   - "python3 *"
   - "pip list*"
   - "docker ps*"
+
+# MCP toolset của sandbox bridge (ticket #11, ADR-0003) — tool
+# `mcp_sandbox_run_in_sandbox` là CỬA DUY NHẤT để payload verify chạm target:
+# container --rm mới tinh cho mỗi call, network --internal, egress qua proxy
+# của worker (Scope + header định danh + rate limit + egress log).
+mcp_servers:
+  sandbox:
+    url: "http://worker:8000/mcp"
+    headers:
+      Authorization: "Bearer ${SANDBOX_MCP_KEY}"
+    # tool call timeout phải LỚN hơn cap timeout sandbox (SANDBOX_MAX_TIMEOUT_S)
+    timeout: 660
+    tools:
+      prompts: false
+      resources: false

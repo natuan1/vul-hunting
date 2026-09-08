@@ -59,6 +59,11 @@ _Avoid_: issue, bug, vuln (khi mơ hồ)
 Bằng chứng gắn với một Candidate hoặc Finding — request/response, screenshot, OOB callback, log thực thi.
 _Avoid_: proof, sample, artifact (dùng chung chung)
 
+**Verify Session**:
+Một lần gọi `run_in_sandbox` — ứng với một container ephemeral, một egress log và một dòng
+trong `sandbox_sessions`; đơn vị truy vấn bằng chứng verify (theo `session_id`).
+_Avoid_: session (đơn thuần), sandbox run
+
 ### AI
 
 **Hermes Agent**:

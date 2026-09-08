@@ -39,5 +39,20 @@ class Settings:
     )
     detection_max_targets: int = int(os.environ.get("DETECTION_MAX_TARGETS", "300"))
 
+    # ── sandbox bridge (ticket #11, ADR-0003) ──
+    # key bearer của MCP endpoint /mcp — hermes gửi theo config mcp_servers.
+    # Rỗng = fail-closed (endpoint từ chối mọi call).
+    sandbox_mcp_key: str = os.environ.get("SANDBOX_MCP_KEY", "")
+    # địa chỉ egress proxy NHÌN TỪ container sandbox (alias của worker trên
+    # network --internal của từng session) + port proxy lắng nghe trong worker
+    sandbox_proxy_host: str = os.environ.get("SANDBOX_PROXY_HOST", "sbx-proxy")
+    sandbox_proxy_port: int = int(os.environ.get("SANDBOX_PROXY_PORT", "8765"))
+    # timeout script: mặc định + cap tuyệt đối (container không sống quá hạn này)
+    sandbox_default_timeout_s: float = float(os.environ.get("SANDBOX_DEFAULT_TIMEOUT_S", "120"))
+    sandbox_max_timeout_s: float = float(os.environ.get("SANDBOX_MAX_TIMEOUT_S", "600"))
+    # tên container worker (compose container_name) — để `docker network connect`
+    # gắn worker vào network internal của session, egress proxy với tới được
+    worker_container_name: str = os.environ.get("WORKER_CONTAINER_NAME", "vulhunt-worker")
+
 
 settings = Settings()

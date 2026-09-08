@@ -10,21 +10,23 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import audit, detect, hermes_client, jobqueue, recon, runner, runs, summary, sync
+from . import audit, detect, hermes_client, jobqueue, recon, runner, runs, sandbox, sandbox_mcp, summary, sync
 from .config import settings
 from .db import run_migrations
+from .egress import EgressProxy
 
 logging.basicConfig(level=logging.INFO)
 
 pool: asyncpg.Pool | None = None
 _consumer_task: asyncio.Task | None = None
+_proxy_server: asyncio.AbstractServer | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global pool, _consumer_task
+    global pool, _consumer_task, _proxy_server
     # jsonb KHÔNG đặt codec toàn cục (set_type_codec 'pg_catalog' không có tác
-    # dụng với jsonb trên asyncpg 0.30) — parse tường minh ở 2 điểm tiêu thụ:
+    # dụng với asyncpg 0.30) — parse tường minh ở 2 điểm tiêu thụ:
     # runs.get_run và runner.execute_run
     pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
     applied = await run_migrations(pool)
@@ -32,22 +34,48 @@ async def lifespan(app: FastAPI):
         logging.getLogger("worker").info("applied migrations: %s", applied)
     await sync.recover_on_startup(pool)
     await summary.recover_on_startup(pool)
-    # consumer queue (ADR-0001) — job crash giữa chừng được reclaim qua visibility timeout
-    worker_id = f"{socket.gethostname()}-{id(pool)}"
-    _consumer_task = asyncio.create_task(
-        jobqueue.loop(
-            pool, runner.HANDLERS, runner.DEAD_HANDLERS, worker_id, runner.RETRY_HANDLERS
-        )
+
+    # sandbox bridge (ticket #11): dọn container/network sót từ lần crash +
+    # egress proxy (luật ra ngoài duy nhất của container sandbox) + MCP server
+    sandbox_mcp.bind_pool(pool)
+    await sandbox.cleanup_stale()
+    proxy = EgressProxy(
+        registry=sandbox.session_registry,
+        record=lambda *args: sandbox.record_egress(pool, *args),
     )
-    yield
-    if _consumer_task is not None:
-        _consumer_task.cancel()
-        await asyncio.gather(_consumer_task, return_exceptions=True)
+    _proxy_server = await asyncio.start_server(
+        proxy.handle_client, "0.0.0.0", settings.sandbox_proxy_port
+    )
+    logging.getLogger("worker").info(
+        "egress proxy listening on :%d", settings.sandbox_proxy_port
+    )
+
+    # MCP server của sandbox bridge: session manager PHẢI chạy trong lifespan
+    # (Mount không truyền lifespan của sub-app xuống) — giữ nguyên suốt vòng
+    # đời process, mọi request /mcp đi qua đây
+    async with sandbox_mcp.mcp.session_manager.run():
+        # consumer queue (ADR-0001) — job crash giữa chừng được reclaim qua visibility timeout
+        worker_id = f"{socket.gethostname()}-{id(pool)}"
+        _consumer_task = asyncio.create_task(
+            jobqueue.loop(
+                pool, runner.HANDLERS, runner.DEAD_HANDLERS, worker_id, runner.RETRY_HANDLERS
+            )
+        )
+        yield
+        if _consumer_task is not None:
+            _consumer_task.cancel()
+            await asyncio.gather(_consumer_task, return_exceptions=True)
+    if _proxy_server is not None:
+        _proxy_server.close()
+        await _proxy_server.wait_closed()
     if pool is not None:
         await pool.close()
 
 
 app = FastAPI(title="vul-hunting worker", lifespan=lifespan)
+
+# MCP server của sandbox bridge (ticket #11) — hermes trỏ MCP toolset về đây
+app.mount("/mcp", sandbox_mcp.mcp_asgi_app())
 
 
 @app.get("/healthz")
@@ -413,6 +441,35 @@ async def stream_run(run_id: int, after: int = Query(0, ge=0)) -> StreamingRespo
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ─────────────── Sandbox bridge: verify session + egress (ticket #11) ───────────────
+
+
+@app.get("/sandbox/sessions")
+async def list_sandbox_sessions(
+    run_id: int | None = None,
+    status: str | None = None,
+    limit: int = Query(50, ge=1, le=500),
+) -> dict:
+    """Verify session sandbox gần nhất — filter theo Run/status; mỗi session
+    = 1 container ephemeral (docker ps truy được qua container_name)."""
+    assert pool is not None
+    return {"items": await sandbox.list_sessions(pool, run_id, status, limit)}
+
+
+@app.get("/sandbox/sessions/{session_id}")
+async def get_sandbox_session(session_id: int) -> dict:
+    """Chi tiết verify session: script + stdout/stderr đầy đủ + egress log
+    (mọi destination mỗi request ra ngoài, kể cả request bị chặn)."""
+    assert pool is not None
+    session = await sandbox.get_session(pool, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="verify session không tồn tại")
+    return session
+
+
+# ───────────────────────────────── audit log ─────────────────────────────────
 
 
 @app.get("/audit")

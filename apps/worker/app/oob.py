@@ -793,7 +793,19 @@ async def run_oob_verification(
     patterns: list[str] = []
     end = time.monotonic() + wait_s
     while True:
-        result = await poll_registration(pool, reg, client)
+        try:
+            result = await poll_registration(pool, reg, client)
+        except InteractshError:
+            # server interactsh trục trặc giữa chừng (evict khỏi cache, 400…)
+            # — ném tiếp cho tầng trên retry nhưng TRẢ LIFECYCLE VỀ CŨ trước,
+            # không bỏ Candidate kẹt 'verifying' mãi (cùng contract với probe
+            # blocked/error phía trên)
+            await _update(
+                f"UPDATE candidates SET status = $2 WHERE id = $1 "
+                f"RETURNING {CANDIDATE_COLS}",
+                candidate_id, prev_status,
+            )
+            raise
         callbacks.extend(
             m for m in result["matched"] if m["candidate_id"] == candidate_id
         )

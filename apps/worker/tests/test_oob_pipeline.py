@@ -519,3 +519,24 @@ async def test_verify_oob_target_bị_chặn_trả_lifecycle_về_và_raise():
         await run_oob_verification(pool, CANDIDATE, probe=blocked, client=FakeClient())
     updates = [p for _, sql, p in pool.executes if "UPDATE candidates SET status = $2" in sql]
     assert updates and updates[-1][1] == "new"  # trả về như cũ, không verdict oan
+
+
+@pytest.mark.asyncio
+async def test_verify_oob_poll_lỗi_môi_trường_trả_lifecycle_về_và_raise():
+    """Server interactsh trục trặt giữa chừng (evict khỏi cache, 400...) →
+    InteractshError phải NÉM TIẾP cho tầng trên retry, nhưng lifecycle phải
+    được trả về như cũ — không bỏ Candidate kẹt 'verifying' mãi."""
+    from app.oob import InteractshError
+
+    class DyingClient(FakeClient):
+        async def poll(self, server_url, correlation_id, secret_key):
+            raise InteractshError(
+                f"poll {server_url}: HTTP 400 could not get correlation-id from cache"
+            )
+
+    probe = FakeProbe([_probe_stdout(), _probe_stdout()])
+    pool = _verify_pool([])
+    with pytest.raises(InteractshError):
+        await run_oob_verification(pool, CANDIDATE, probe=probe, client=DyingClient())
+    updates = [p for _, sql, p in pool.executes if "UPDATE candidates SET status = $2" in sql]
+    assert updates and updates[-1][1] == "new"  # trả lifecycle về cũ, không kẹt verifying

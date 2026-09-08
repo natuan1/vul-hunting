@@ -234,6 +234,7 @@ async def run_detection_phase(
         run["ident_header_value"],
         snapshot,
         bool(run["allow_non_prod"]),
+        program_id=run.get("program_id"),
     )
 
     if live_urls is None or classed_urls is None:

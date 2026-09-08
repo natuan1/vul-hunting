@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import audit, detect, hermes_client, jobqueue, oob, recon, runner, runs, sandbox, sandbox_mcp, summary, sync, verify
+from . import audit, detect, guardrails, hermes_client, jobqueue, oob, recon, runner, runs, sandbox, sandbox_mcp, summary, sync, verify
 from .config import settings
 from .db import run_migrations
 from .egress import EgressProxy
@@ -18,7 +18,7 @@ from .egress import EgressProxy
 logging.basicConfig(level=logging.INFO)
 
 pool: asyncpg.Pool | None = None
-_consumer_task: asyncio.Task | None = None
+_consumer_task: asyncio.Future | None = None
 _proxy_server: asyncio.AbstractServer | None = None
 _oob_task: asyncio.Task | None = None
 
@@ -29,7 +29,9 @@ async def lifespan(app: FastAPI):
     # jsonb KHÔNG đặt codec toàn cục (set_type_codec 'pg_catalog' không có tác
     # dụng với asyncpg 0.30) — parse tường minh ở 2 điểm tiêu thụ:
     # runs.get_run và runner.execute_run
-    pool = await asyncpg.create_pool(settings.database_url, min_size=1, max_size=5)
+    pool = await asyncpg.create_pool(
+        settings.database_url, min_size=1, max_size=settings.db_pool_max
+    )
     applied = await run_migrations(pool)
     if applied:
         logging.getLogger("worker").info("applied migrations: %s", applied)
@@ -55,12 +57,23 @@ async def lifespan(app: FastAPI):
     # (Mount không truyền lifespan của sub-app xuống) — giữ nguyên suốt vòng
     # đời process, mọi request /mcp đi qua đây
     async with sandbox_mcp.mcp.session_manager.run():
-        # consumer queue (ADR-0001) — job crash giữa chừng được reclaim qua visibility timeout
+        # consumer queue (ADR-0001) — job crash giữa chừng được reclaim qua
+        # visibility timeout. Chạy N consumer SONG SONG (= guardrail cap, ticket
+        # #19): nhiều Run chạy đồng thời nhưng tổng Tool Execution vẫn ≤ cap
+        # (guardrails.CAP chặn trong execute_tool); SKIP LOCKED lo claim an toàn
         worker_id = f"{socket.gethostname()}-{id(pool)}"
-        _consumer_task = asyncio.create_task(
-            jobqueue.loop(
-                pool, runner.HANDLERS, runner.DEAD_HANDLERS, worker_id, runner.RETRY_HANDLERS
-            )
+        _consumer_task = asyncio.gather(
+            *[
+                jobqueue.loop(
+                    pool,
+                    runner.HANDLERS,
+                    runner.DEAD_HANDLERS,
+                    f"{worker_id}-{i}",
+                    runner.RETRY_HANDLERS,
+                )
+                for i in range(settings.guardrail_max_concurrent)
+            ],
+            return_exceptions=True,
         )
         # poller OOB (ticket #13): callback từ Internet gắn vào Candidate đang
         # chờ verify + sweep registration hết hạn + dọn callback cache
@@ -101,6 +114,14 @@ async def healthz() -> dict:
         "status": "ok" if postgres["connected"] else "degraded",
         "service": "worker",
         "postgres": postgres,
+        # guardrails (ticket #19): cap Tool Execution đồng thời + mức cao nhất
+        # đã quan sát trong đời process — bằng chứng "không bao giờ vượt cap"
+        "guardrails": {
+            "cap": guardrails.CAP.limit,
+            "active": guardrails.CAP._active,
+            "max_active": guardrails.CAP.max_active,
+            "runs_guarded": len(guardrails._guards),
+        },
     }
 
 
@@ -337,6 +358,18 @@ async def get_run(run_id: int) -> dict:
     if run is None:
         raise HTTPException(status_code=404, detail="run không tồn tại")
     return run
+
+
+@app.post("/runs/{run_id}/resume")
+async def resume_run(run_id: int) -> dict:
+    """Lối thoát DUY NHẤT khỏi 'halted' (guardrail ban signal, ticket #19) —
+    người dùng bấm tay, KHÔNG có auto-resume. Run về 'pending' + job xếp hàng lại."""
+    assert pool is not None
+    resumed = await guardrails.resume_run(pool, run_id)
+    if not resumed:
+        raise HTTPException(status_code=409, detail="run không ở trạng thái halted")
+    run = await runs.get_run(pool, run_id)
+    return {"run": run}
 
 
 @app.get("/runs/{run_id}/assets")

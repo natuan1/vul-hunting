@@ -201,7 +201,7 @@ async def stream_events(pool: asyncpg.Pool, run_id: int, after: int):
         if row is None:
             yield f"event: done\ndata: {json.dumps({'status': 'missing'})}\n\n"
             return
-        if row["status"] in ("completed", "failed"):
+        if row["status"] in ("completed", "failed", "halted"):
             yield f"event: done\ndata: {json.dumps({'status': row['status']})}\n\n"
             return
         await asyncio.sleep(1.0)

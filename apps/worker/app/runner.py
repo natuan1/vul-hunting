@@ -13,7 +13,7 @@ import logging
 
 import asyncpg
 
-from . import detect, jobqueue, oob, recon
+from . import detect, guardrails, jobqueue, oob, recon
 from .tools import add_log, clear_artifacts
 
 log = logging.getLogger("runner")
@@ -100,6 +100,12 @@ async def execute_run(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
         # Detection Phase (ticket #10) chạy ngay sau Recon trong cùng Run —
         # recon cho bề mặt (live host + URL đã phân loại class), nuclei chọt
         detection_summary = await detect.run_detection_phase(pool, run)
+    except guardrails.RunHalted:
+        # Guardrail HALT (ban signal) — status 'halted' đã ghi trong DB bởi
+        # halt_run. Job kết thúc BÌNH THƯỜNG (queue KHÔNG retry → không có
+        # auto-resume); người dùng bấm Resume mới chạy lại (ticket #19).
+        log.warning("run %d bị guardrail HALT — chờ người dùng resume", run_id)
+        return
     finally:
         heartbeat_task.cancel()
         await asyncio.gather(heartbeat_task, return_exceptions=True)

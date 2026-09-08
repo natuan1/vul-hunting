@@ -195,7 +195,28 @@ export default function RunDetailPage() {
   }, [load, openStream, loadAudit]);
 
   // poll kết quả recon — bộ đếm tăng dần trong lúc Run đang chạy
-  const finished = run?.status === "completed" || run?.status === "failed";
+  // 'halted' (guardrail, ticket #19) cũng ngừng poll — Run đang bị NGHỦ chờ người xử lý
+  const finished =
+    run?.status === "completed" || run?.status === "failed" || run?.status === "halted";
+
+  // Resume tay — lối thoát DUY NHẤT khỏi 'halted' (không có auto-resume)
+  const [resuming, setResuming] = useState(false);
+  const resumeRun = async () => {
+    setResuming(true);
+    try {
+      const res = await fetch(`/api/runs/${id}/resume`, { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        setError(body.detail ?? `HTTP ${res.status}`);
+        return;
+      }
+      doneRef.current = false; // nối lại log stream cho attempt mới
+      setRun(await load());
+      openStream();
+    } finally {
+      setResuming(false);
+    }
+  };
   useEffect(() => {
     loadAssets().catch(() => {});
     loadUrls().catch(() => {});
@@ -261,7 +282,25 @@ export default function RunDetailPage() {
         </div>
       </div>
 
-      {run.error && <p className="alert">Run thất bại: {run.error}</p>}
+      {run.status === "halted" && (
+        <div className="alert">
+          <strong>⛔ GUARDRAIL đã dừng toàn bộ Run</strong>
+          {run.error ? ` — ${run.error}` : null}
+          <div className="btnrow" style={{ marginTop: 8 }}>
+            <button className="btn" onClick={resumeRun} disabled={resuming}>
+              {resuming ? "Đang resume…" : "▶ Resume Run"}
+            </button>
+            <span className="meta">
+              Phát hiện tín hiệu bị cấm (CAPTCHA / chuỗi 401-403). Không auto-resume —
+              xử lý xong (đổi credential, hạ nhịp, chờ WAF nguội) hãy bấm Resume.
+            </span>
+          </div>
+        </div>
+      )}
+
+      {run.error && run.status !== "halted" && (
+        <p className="alert">Run thất bại: {run.error}</p>
+      )}
 
       <p className="meta">
         Tạo {fmtTime(run.created_at)} · bắt đầu {fmtTime(run.started_at)} · kết thúc{" "}

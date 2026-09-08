@@ -85,5 +85,28 @@ class Settings:
     oob_verify_wait_s: float = float(os.environ.get("OOB_VERIFY_WAIT_S", "60"))
     oob_verify_poll_s: float = float(os.environ.get("OOB_VERIFY_POLL_S", "5"))
 
+    # ── guardrails (ticket #19): phân loại lỗi TRƯỚC, phản ứng SAU ──
+    # cap Tool Execution đồng thời (chống WAF ban) — cũng là số consumer queue
+    # song song (mỗi consumer 1 Run; cap bên trong vẫn giữ nếu consumer nhiều hơn)
+    guardrail_max_concurrent: int = int(os.environ.get("GUARDRAIL_MAX_CONCURRENT", "4"))
+    # rate limit: backoff luỹ thừa x2 — mốc đầu + trần 1 giờ
+    guardrail_backoff_base_s: float = float(os.environ.get("GUARDRAIL_BACKOFF_BASE_S", "30"))
+    guardrail_backoff_cap_s: float = float(os.environ.get("GUARDRAIL_BACKOFF_CAP_S", "3600"))
+    # sau N lần backoff không hết rate limit thì thôi (ghi nhận, Run vẫn chạy tiếp)
+    guardrail_rate_limit_max_retries: int = int(
+        os.environ.get("GUARDRAIL_RATE_LIMIT_MAX_RETRIES", "5")
+    )
+    # auth error: retry tối đa 3 (nhắc refresh credential/header định danh)
+    guardrail_auth_max_retries: int = int(os.environ.get("GUARDRAIL_AUTH_MAX_RETRIES", "3"))
+    # chuỗi 401/403 liên tiếp đủ dài → coi là tín hiệu bị cấm, HALT Run
+    guardrail_ban_consecutive: int = int(os.environ.get("GUARDRAIL_BAN_CONSECUTIVE", "5"))
+    # timeout: kéo dài timeout x2 (trần) + giảm parallelism, tối đa N lần retry
+    guardrail_timeout_max_s: float = float(os.environ.get("GUARDRAIL_TIMEOUT_MAX_S", "3600"))
+    guardrail_timeout_max_retries: int = int(
+        os.environ.get("GUARDRAIL_TIMEOUT_MAX_RETRIES", "2")
+    )
+    # pool Postgres — consumer song song đòi nhiều connection hơn trước (5)
+    db_pool_max: int = int(os.environ.get("DB_POOL_MAX", "10"))
+
 
 settings = Settings()

@@ -86,6 +86,17 @@ Key API (OpenRouter, HackerOne, Intigriti) đặt trong `.env` — xem `.env.exa
   header định danh, giữ nhịp rate limit của Run, và ghi egress log vào DB.
   Timeout được enforce (quá hạn → `docker rm -f`). Verify session + egress
   log truy được qua `/sandbox/sessions`.
+- **Guardrails** (ticket #19) — lớp xử lý lỗi + an toàn chung cho MỌI Tool
+  Execution, nguyên tắc "phân loại lỗi TRƯỚC, phản ứng SAU" (retry-generic
+  là con đường nhanh nhất tới IP ban). Bảng phân loại + strategy nằm ở MỘT
+  module `app/guardrails.py` mà `execute_tool` (cửa ắt duy nhất) đi qua:
+  rate limit (429 / "too many requests") → backoff luỹ thừa x2 trần 1 giờ;
+  ban signal (CAPTCHA / chuỗi 401-403 liên tiếp) → **HALT toàn bộ Run** —
+  UI đỏ + nút Resume bấm tay, KHÔNG auto-resume; auth error → nhắc refresh
+  credential + retry tối đa 3; timeout → kéo dài timeout x2 (trần) + giảm
+  parallelism toàn cục; scope violation → target vào `asset_blacklist` chặn
+  cả các Run sau. Worker chạy 4 consumer song song nhưng tổng Tool Execution
+  đồng thời không bao giờ vượt `GUARDRAIL_MAX_CONCURRENT` (mặc định 4).
 
   Giới hạn đã ghi nhận: HTTPS đi qua CONNECT tunnel nên egress log ghi **mỗi
   connection** (không đọc được từng request bên trong TLS), header định danh

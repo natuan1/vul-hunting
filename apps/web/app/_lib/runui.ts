@@ -4,6 +4,7 @@
 export function statusBadgeClass(status: string): string {
   if (status === "completed") return "badge ok";
   if (status === "failed") return "badge down";
+  if (status === "halted") return "badge down"; // guardrail dừng (ticket #19) — đỏ
   return "badge info"; // pending | running
 }
 
@@ -21,6 +22,7 @@ export function decisionBadgeClass(decision: string): string {
 export function decisionLabel(decision: string): string {
   if (decision === "allowed") return "cho phép";
   if (decision === "blocked_non_prod") return "chặn (non-prod)";
+  if (decision === "blocked_blacklist") return "chặn (blacklist)"; // ticket #19
   return "chặn (ngoài Scope)";
 }
 

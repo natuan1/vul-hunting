@@ -159,6 +159,7 @@ async def run_verify_session(
         run["ident_header_value"],
         snapshot,
         bool(run["allow_non_prod"]),
+        program_id=run.get("program_id"),
     )
     reg = registry if registry is not None else session_registry
 

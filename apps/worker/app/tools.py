@@ -7,10 +7,14 @@ lần chạy tool. Cơ chế an toàn kế thừa từ ticket #6/#7 giữ nguyê
 - rate limit (req/s) và header định danh nằm trong Run config, MỌI Tool
   Execution đều kế thừa (limiter chờ trước khi launch);
 - Scope Validator chặn cứng mọi target không thuộc Scope snapshot —
-  TargetBlockedError tường minh, KHÔNG có request nào đi ra;
+  TargetBlockedError tường minh, KHÔNG có request nào đi ra; target ngoài
+  Scope còn bị blacklist cho các Run sau (ticket #19);
 - mọi target đều ghi audit log (cả allowed lẫn blocked) vào scope_audit_log;
 - stdout/stderr/exit code/thời gian ghi vào tool_executions, stdout thô lưu
-  artifact trên filesystem (docker volume) và đổ vào run_logs để UI stream.
+  artifact trên filesystem (docker volume) và đổ vào run_logs để UI stream;
+- MỌI kết quả đi qua guardrails.classify → react (ticket #19): phân loại lỗi
+  TRƯỚC, phản ứng SAU (backoff rate limit, HALT khi ban, retry auth/timeout),
+  và mọi launch chờ qua guardrails.CAP (≤ 4 Tool Execution đồng thời).
 """
 
 import asyncio
@@ -25,7 +29,7 @@ from typing import Protocol
 
 import asyncpg
 
-from . import audit
+from . import audit, guardrails
 from .config import settings
 from .ratelimit import RateLimiter
 from .scope_validator import ScopeDecision, check_target, target_host
@@ -118,6 +122,9 @@ class ToolContext:
     ident: dict[str, str]
     snapshot: list[dict]
     allow_non_prod: bool = False
+    # Program của Run — để guardrails blacklist asset ngoài Scope theo Program
+    # (ticket #19); None thì bỏ qua blacklist (tương thích call site cũ)
+    program_id: int | None = None
     _seq: int = field(default=0, repr=False)
 
     def next_seq(self) -> int:
@@ -134,17 +141,25 @@ class ToolContext:
         đã khai báo (subfinder/amass), không bao giờ dùng cho probe chủ động.
         Fail-closed: nếu chính lần ghi audit lỗi (DB trục trặc), exception
         đẩy lên để Run retry — không có request nào ra ngoài mà thiếu audit.
+        Ticket #19: asset bị blacklist chặn TRƯỚC cả lookup Scope; target bị
+        chặn vì NGOÀI Scope thì blacklist luôn (non-prod thì không — có thể
+        được phép ở Run sau với allow_non_prod).
         """
+        host = target_host(target)
+        if await guardrails.is_blacklisted(pool, self.program_id, host):
+            reason = f"asset bị blacklist (scope violation trước đó): {host}"
+            await audit.record(pool, self.run_id, tool, host, "blocked_blacklist", reason)
+            raise TargetBlockedError(reason)
         d = check_target(
             target,
             self.snapshot,
             allow_non_prod=self.allow_non_prod,
             allow_wildcard_base=allow_wildcard_base,
         )
-        await audit.record(
-            pool, self.run_id, tool, target_host(target), d.decision, d.reason
-        )
+        await audit.record(pool, self.run_id, tool, host, d.decision, d.reason)
         if not d.allowed:
+            if d.decision == "blocked_out_of_scope" and self.program_id is not None:
+                await guardrails.blacklist_asset(pool, self.program_id, host, d.reason)
             raise TargetBlockedError(d.reason)
         return d
 
@@ -156,6 +171,7 @@ def build_context(
     ident_header_value: str | None,
     snapshot: list[dict],
     allow_non_prod: bool,
+    program_id: int | None = None,
 ) -> ToolContext:
     limiter = RateLimiter(1.0 / rate_limit_rps) if rate_limit_rps and rate_limit_rps > 0 else None
     ident: dict[str, str] = {}
@@ -167,6 +183,7 @@ def build_context(
         ident=ident,
         snapshot=snapshot,
         allow_non_prod=bool(allow_non_prod),
+        program_id=program_id,
     )
 
 
@@ -266,10 +283,13 @@ async def execute_tool(
     runner: ToolRunner | None = None,
     docker_args: list[str] | None = None,
 ) -> ToolResult:
-    """Một Tool Execution: tạo row 'running' → chờ rate limit → chạy tool →
-    ghi exit code/stdout/stderr/thời gian + artifact. Exit code khác 0 KHÔNG
-    raise (tool lỗi là dữ liệu recon, không phải lỗi hạ tầng) — chỉ lỗi môi
-    trường docker mới raise để jobqueue retry."""
+    """Một Tool Execution: tạo row 'running' → chờ rate limit + cap concurrency
+    → chạy tool → guardrails PHÂN LOẠI kết quả rồi PHẢN ỨNG (retry sau backoff,
+    HALT Run khi ban signal — ticket #19) → ghi exit code/stdout/stderr/thời gian
+    + artifact. Exit code khác 0 KHÔNG raise (tool lỗi là dữ liệu recon, không
+    phải lỗi hạ tầng) — chỉ lỗi môi trường docker mới raise để jobqueue retry,
+    còn ban signal thì guardrails raise RunHalted để TOÀN BỘ Run dừng."""
+    guard = guardrails.for_run(ctx.run_id)
     seq = ctx.next_seq()
     args_text = " ".join(shlex.quote(a) for a in args)
     header_note = " ".join(f"[{k}: {v}]" for k, v in ctx.ident.items())
@@ -284,25 +304,47 @@ async def execute_tool(
         )
     await add_log(pool, ctx.run_id, f"$ {tool} {args_text} {header_note}".rstrip())
 
-    if ctx.limiter is not None:
-        await ctx.limiter.wait()  # mọi launch của Run đều đi qua đây
-    started = time.monotonic()
-    if runner is None:
-        runner = DockerToolRunner()
-    try:
-        result = await runner(tool, args, stdin, docker_args)
-    except Exception as exc:
-        elapsed = time.monotonic() - started
-        await pool.execute(
-            "UPDATE tool_executions SET status = 'failed', stderr = $2, "
-            "finished_at = now() WHERE id = $1",
-            exec_id,
-            str(exc)[:5000],
-        )
+    attempts = 0
+    while True:
+        attempts += 1
+        if ctx.limiter is not None:
+            await ctx.limiter.wait()  # mọi launch của Run đều đi qua đây
+        # timeout học được từ guardrail (kéo dài dần khi bị quá hạn); runner
+        # truyền vào từ ngoài tự quản thời gian của nó
+        actual_runner = runner or DockerToolRunner(timeout_s=guard.timeout_s)
+        started = time.monotonic()
+        await guardrails.CAP.acquire()  # ≤ guardrail_max_concurrent launch đồng thời
+        try:
+            result = await actual_runner(tool, args, stdin, docker_args)
+        except Exception as exc:
+            elapsed = time.monotonic() - started
+            await pool.execute(
+                "UPDATE tool_executions SET status = 'failed', stderr = $2, "
+                "finished_at = now() WHERE id = $1",
+                exec_id,
+                str(exc)[:5000],
+            )
+            await add_log(
+                pool,
+                ctx.run_id,
+                f"{tool} lỗi môi trường sau {elapsed:.1f}s: {exc}",
+                level="error",
+            )
+            raise
+        finally:
+            await guardrails.CAP.release()
+
+        kind = guardrails.classify(result)
+        if kind is guardrails.ErrorKind.NONE:
+            guard.note_clean()  # đứt chuỗi 40x, backoff về mốc đầu
+            break
+        if not await guardrails.react(pool, ctx.run_id, tool, kind, guard):
+            break  # hết lượt retry — ghi nhận kết quả, Run vẫn chạy tiếp
         await add_log(
-            pool, ctx.run_id, f"{tool} lỗi môi trường sau {elapsed:.1f}s: {exc}", level="error"
+            pool,
+            ctx.run_id,
+            f"{tool}: chạy lại lần {attempts + 1} sau guardrail ({kind.value})",
         )
-        raise
 
     elapsed = time.monotonic() - started
     status = "ok" if result.exit_code == 0 else "failed"

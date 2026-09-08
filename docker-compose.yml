@@ -72,6 +72,9 @@ services:
       RECON_VOLUME: vul-hunting_recon_data
       # ── sandbox bridge (ticket #11) ──
       SANDBOX_MCP_KEY: ${SANDBOX_MCP_KEY}
+      # ── vòng xác minh open redirect (ticket #12) ──
+      VERIFY_CONFIDENCE_THRESHOLD: ${VERIFY_CONFIDENCE_THRESHOLD:-0.85}
+      VERIFY_CANARY_URL: ${VERIFY_CANARY_URL:-https://canary.example/vulhunt-poc}
     ports:
       - "${WORKER_PORT:-8000}:8000"
     volumes:

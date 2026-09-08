@@ -54,5 +54,16 @@ class Settings:
     # gắn worker vào network internal của session, egress proxy với tới được
     worker_container_name: str = os.environ.get("WORKER_CONTAINER_NAME", "vulhunt-worker")
 
+    # ── vòng xác minh (ticket #12) ──
+    # ngưỡng confidence: score ≥ ngưỡng → Candidate thành Finding (verified);
+    # dưới ngưỡng → rejected kèm lý do + pattern log
+    verify_confidence_threshold: float = float(
+        os.environ.get("VERIFY_CONFIDENCE_THRESHOLD", "0.85")
+    )
+    # URL canary mặc định làm payload PoC open redirect (khi không chỉ định)
+    verify_canary_url: str = os.environ.get(
+        "VERIFY_CANARY_URL", "https://canary.example/vulhunt-poc"
+    )
+
 
 settings = Settings()

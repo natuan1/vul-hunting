@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import audit, detect, hermes_client, jobqueue, recon, runner, runs, sandbox, sandbox_mcp, summary, sync
+from . import audit, detect, hermes_client, jobqueue, recon, runner, runs, sandbox, sandbox_mcp, summary, sync, verify
 from .config import settings
 from .db import run_migrations
 from .egress import EgressProxy
@@ -422,6 +422,54 @@ async def set_candidate_status(candidate_id: int, req: CandidateStatusRequest) -
     if result is None:
         raise HTTPException(status_code=404, detail="candidate không tồn tại")
     return result
+
+
+class VerifyCandidateRequest(BaseModel):
+    payload: str | None = None  # URL canary cho PoC (trống → canary mặc định)
+
+
+@app.post("/candidates/{candidate_id}/verify")
+async def verify_candidate(candidate_id: int, req: VerifyCandidateRequest | None = None) -> dict:
+    """Chạy trọn vòng xác minh open redirect (ticket #12): baseline capture →
+    soạn PoC → sandbox → response diff so baseline → confidence ≥ ngưỡng
+    (VERIFY_CONFIDENCE_THRESHOLD, mặc định 0.85) → verified kèm evidence diff,
+    ngược lại rejected kèm lý do + pattern log. Mọi payload chạy trong sandbox.
+    Endpoint chỉ dành cho Candidate class 'redirect'."""
+    assert pool is not None
+    candidate = await detect.get_candidate(pool, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="candidate không tồn tại")
+    if candidate["class"] != "redirect":
+        raise HTTPException(
+            status_code=422,
+            detail=f"candidate thuộc class '{candidate['class']}' — vòng verify này dành cho class 'redirect'",
+        )
+    try:
+        result = await verify.run_redirect_verification(
+            pool, candidate, payload=(req.payload if req else None)
+        )
+    except verify.ProbeBlocked as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    updated = await detect.get_candidate(pool, candidate_id)
+    return {"candidate": updated, "verify": result}
+
+
+@app.get("/candidates/{candidate_id}/verify-evidence")
+async def get_candidate_verify_evidence(candidate_id: int) -> dict:
+    """Evidence diff của vòng xác minh (baseline + PoC + pattern log) — 404
+    nếu Candidate/chưa verify/evidence không tồn tại."""
+    assert pool is not None
+    try:
+        evidence = await detect.read_evidence(
+            pool, candidate_id, path_column="verify_evidence_path"
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if evidence is None:
+        raise HTTPException(status_code=404, detail="verify evidence không tồn tại")
+    return evidence
 
 
 @app.get("/runs/{run_id}/logs")

@@ -38,6 +38,22 @@ Key API (OpenRouter, HackerOne, Intigriti) đặt trong `.env` — xem `.env.exa
   stdout/stderr/exit code/thời gian lưu bảng `tool_executions`.
 - **Detection** — nuclei quét bề mặt từ Recon → Candidate kèm evidence JSON
   (`/candidates`, Findings screen trên UI).
+- **Verification loop: open redirect** (ticket #12) — xác minh agentic Candidate
+  class `redirect`: skill hermes `open-redirect-verify` (mount tại
+  `config/hermes/skills/`) hướng dẫn agent gọi MCP tool
+  `verify_open_redirect(candidate_id, payload?)` trên worker; tool đi trọn vòng
+  **baseline capture** (request vô hại, ghi status/headers/content-type/
+  body-length) → **soạn PoC** từ param của Candidate → **chạy cả hai trong
+  sandbox** (container ephemeral, scope + egress + rate limit như mọi Tool
+  Execution) → **response diff so baseline** theo hướng khai thác được (WAF
+  block page / payload bị encode-escape / payload nằm trong error log đều kết
+  luận false positive) → **confidence score** 0.0–1.0. Score ≥ ngưỡng
+  (`VERIFY_CONFIDENCE_THRESHOLD`, mặc định 0.85) → Candidate thành Finding
+  (status `verified`) kèm verify evidence (baseline + PoC + diff + pattern log,
+  xem qua `GET /candidates/{id}/verify-evidence`); dưới ngưỡng → `rejected`
+  kèm lý do + pattern log. UI Findings hiển thị confidence/lý do loại và nút
+  chạy vòng xác minh cho class `redirect`. Payload KHÔNG bao giờ được agent
+  thực thi trực tiếp.
 - **Sandbox bridge** (ticket #11, ADR-0003) — Hermes Agent gọi MCP tool
   `run_in_sandbox(script, target, timeout)` qua toolset `mcp_servers.sandbox`
   trong `config/hermes/config.yaml`: mỗi lần gọi worker quay một container

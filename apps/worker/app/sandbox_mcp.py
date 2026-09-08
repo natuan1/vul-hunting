@@ -1,5 +1,5 @@
-"""MCP server của worker (ticket #11, ADR-0003) — expose tool
-`run_in_sandbox` cho hermes qua MCP toolset.
+"""MCP server của worker (ticket #11, #12, ADR-0003) — expose tool
+`run_in_sandbox` + `verify_open_redirect` cho hermes qua MCP toolset.
 
 hermes cấu hình (config/hermes/config.yaml):
 
@@ -9,10 +9,12 @@ hermes cấu hình (config/hermes/config.yaml):
         headers:
           Authorization: "Bearer ${SANDBOX_MCP_KEY}"
 
-Hermes nhận tool với prefix toolset: `mcp_sandbox_run_in_sandbox`. Mỗi lần
-gọi = 1 verify session = 1 container --rm mới tinh (app/sandbox.py); agent
-không bao giờ giữ shell lâu dài. Endpoint require bearer key — rỗng thì
-fail-closed (401 mọi call).
+Hermes nhận tool với prefix toolset: `mcp_sandbox_run_in_sandbox`,
+`mcp_sandbox_verify_open_redirect`. Mỗi lần `run_in_sandbox` = 1 verify
+session = 1 container --rm mới tinh (app/sandbox.py); `verify_open_redirect`
+chạy trọn vòng baseline → PoC → diff → confidence (app/verify.py) — mọi
+payload đều chạy trong sandbox, agent không bao giờ thực thi trực tiếp.
+Endpoint require bearer key — rỗng thì fail-closed (401 mọi call).
 """
 
 import hashlib
@@ -23,7 +25,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import sandbox
+from . import detect, sandbox, verify
 from .config import settings
 
 log = logging.getLogger("sandbox_mcp")
@@ -65,6 +67,40 @@ async def _run_in_sandbox(
         "note": (
             f"stdout/stderr đầy đủ: GET /sandbox/sessions/{result['session_id']} "
             f"· egress log truy theo verify session #{result['session_id']}"
+        ),
+    }
+
+
+async def _verify_open_redirect(
+    candidate_id: int,
+    payload: str | None = None,
+) -> dict[str, Any]:
+    """Phần thực thi của tool verify (tách khỏi decorator để test monkeypatch)."""
+    if _pool is None:
+        raise RuntimeError("worker chưa sẵn sàng (pool chưa bind)")
+    candidate = await detect.get_candidate(_pool, candidate_id)
+    if candidate is None:
+        return {
+            "status": "error",
+            "reason": f"Candidate #{candidate_id} không tồn tại",
+        }
+    if candidate["class"] != "redirect":
+        return {
+            "status": "error",
+            "reason": (
+                f"Candidate #{candidate_id} thuộc class '{candidate['class']}' — "
+                "tool này chỉ dành cho class 'redirect' (open redirect)"
+            ),
+        }
+    result = await verify.run_redirect_verification(_pool, candidate, payload=payload)
+    sid = result.get("verify_session_id")
+    return {
+        **result,
+        "note": (
+            "evidence diff (baseline + PoC + pattern log): "
+            f"GET /candidates/{candidate_id}/verify-evidence · egress log truy "
+            f"theo verify session #{sid} · ngưỡng confidence: "
+            f"{result.get('threshold')}"
         ),
     }
 
@@ -111,6 +147,31 @@ def build_mcp() -> FastMCP:
         destination + decision), blocked (số destination bị chặn).
         """
         return await _run_in_sandbox(script, target, timeout, run_id)
+
+    @server.tool()
+    async def verify_open_redirect(
+        candidate_id: int,
+        payload: str | None = None,
+    ) -> dict[str, Any]:
+        """Xác minh agentic 1 Candidate class 'redirect' (open redirect) — đi
+        trọn vòng: baseline capture (request vô hại) → soạn PoC từ param của
+        Candidate → chạy CẢ HAI trong sandbox → response diff so với baseline
+        (WAF block / payload bị escape / payload trong error log = false
+        positive) → chấm confidence 0.0–1.0. Score ≥ ngưỡng (mặc định 0.85)
+        → Candidate thành Finding (status `verified`) kèm evidence diff; dưới
+        ngưỡng → `rejected` kèm lý do + pattern log. KHÔNG bao giờ chạy payload
+        trực tiếp — mọi request đi qua container sandbox ephemeral.
+
+        Args:
+            candidate_id: id của Candidate class 'redirect' cần xác minh.
+            payload: URL canary dùng làm payload PoC (bỏ trống → canary mặc định).
+
+        Returns JSON: candidate_id, verdict (verified|rejected), score,
+        threshold, reason, signals, patterns (pattern log), payload,
+        evidence_path (file JSON baseline+PoC+diff), baseline_session_id,
+        verify_session_id. Status 'error' nếu candidate không tồn tại/sai class.
+        """
+        return await _verify_open_redirect(candidate_id, payload)
 
     return server
 

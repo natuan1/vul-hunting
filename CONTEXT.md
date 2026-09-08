@@ -64,6 +64,18 @@ Một lần gọi `run_in_sandbox` — ứng với một container ephemeral, m�
 trong `sandbox_sessions`; đơn vị truy vấn bằng chứng verify (theo `session_id`).
 _Avoid_: session (đơn thuần), sandbox run
 
+**Confidence Score**:
+Điểm 0.0–1.0 do vòng xác minh chấm dựa trên response diff của PoC so với baseline; đạt
+ngưỡng (mặc định 0.85, cấu hình qua `VERIFY_CONFIDENCE_THRESHOLD`) thì Candidate thành
+Finding, dưới ngưỡng thì rejected kèm lý do và pattern log.
+_Avoid_: điểm tin cậy (dài), probability
+
+**Verify Evidence**:
+File JSON của một vòng xác minh — baseline (request vô hại) + PoC + diff so baseline +
+pattern log; đường dẫn nằm trong `candidates.verify_evidence_path`, xem qua
+`GET /candidates/{id}/verify-evidence`.
+_Avoid_: proof (dùng chung chung), log verify
+
 ### AI
 
 **Hermes Agent**:

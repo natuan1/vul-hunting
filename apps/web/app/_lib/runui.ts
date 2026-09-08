@@ -39,6 +39,11 @@ export type Candidate = {
   status: string;
   evidence_path: string | null;
   first_seen: string;
+  // kết quả vòng xác minh (ticket #12)
+  confidence: number | null;
+  confidence_threshold: number | null;
+  reject_reason: string | null;
+  verify_evidence_path: string | null;
 };
 
 export function severityBadgeClass(severity: string): string {
@@ -59,4 +64,19 @@ export function candidateStatusLabel(status: string): string {
   if (status === "verified") return "đã xác minh";
   if (status === "rejected") return "loại bỏ";
   return "mới";
+}
+
+// Confidence score của vòng xác minh (0.0–1.0) — badge xanh khi đạt ngưỡng,
+// đỏ khi bị loại, xám khi chưa verify
+export function confidenceBadgeClass(status: string, score: number | null): string {
+  if (score === null) return "badge";
+  if (status === "verified") return "badge ok";
+  if (status === "rejected") return "badge down";
+  return "badge info"; // verifying / new nhưng đã có score cũ
+}
+
+export function confidenceText(score: number | null, threshold: number | null): string {
+  if (score === null) return "—";
+  const base = score.toFixed(2);
+  return threshold !== null ? `${base} / ${threshold.toFixed(2)}` : base;
 }

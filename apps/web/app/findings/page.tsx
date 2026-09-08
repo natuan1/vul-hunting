@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import {
   candidateStatusBadgeClass,
   candidateStatusLabel,
+  confidenceBadgeClass,
+  confidenceText,
   fmtTime,
   severityBadgeClass,
   type Candidate,
@@ -126,6 +128,7 @@ export default function FindingsPage() {
               <th>Severity</th>
               <th>Template</th>
               <th>Trạng thái</th>
+              <th>Confidence</th>
               <th>Run</th>
               <th>Phát hiện</th>
             </tr>
@@ -151,6 +154,11 @@ export default function FindingsPage() {
                 <td>
                   <span className={candidateStatusBadgeClass(c.status)}>
                     {candidateStatusLabel(c.status)}
+                  </span>
+                </td>
+                <td>
+                  <span className={confidenceBadgeClass(c.status, c.confidence)}>
+                    {confidenceText(c.confidence, c.confidence_threshold)}
                   </span>
                 </td>
                 <td>

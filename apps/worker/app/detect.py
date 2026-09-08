@@ -159,12 +159,15 @@ CandidateRow = namedtuple(
     "run_id target cls param template_id title severity matcher_name status evidence_path",
 )
 
-_CANDIDATE_COLS = (
+CANDIDATE_COLS = (
     "id, run_id, target, class, param, template_id, title, severity, "
-    "matcher_name, status, evidence_path, first_seen"
+    "matcher_name, status, evidence_path, first_seen, "
+    # kết quả vòng xác minh (ticket #12)
+    "confidence, confidence_threshold, reject_reason, verify_evidence_path, "
+    "verify_session_id, baseline_session_id"
 )
 
-_SELECT_CANDIDATES = f"SELECT {_CANDIDATE_COLS}\nFROM candidates\n"
+_SELECT_CANDIDATES = f"SELECT {CANDIDATE_COLS}\nFROM candidates\n"
 
 _INSERT_CANDIDATES_SQL = """
 INSERT INTO candidates (run_id, target, class, param, template_id,
@@ -383,7 +386,7 @@ async def set_status(pool: asyncpg.Pool, candidate_id: int, status: str) -> dict
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             f"UPDATE candidates SET status = $2 WHERE id = $1 "
-            f"RETURNING {_CANDIDATE_COLS}",
+            f"RETURNING {CANDIDATE_COLS}",
             candidate_id,
             s,
         )
@@ -393,13 +396,22 @@ async def set_status(pool: asyncpg.Pool, candidate_id: int, status: str) -> dict
 # cap đọc evidence để không ngập UI — file đầy đủ vẫn nằm trên volume
 EVIDENCE_READ_CAP = 200_000
 
+# cột path evidence được phép đọc (whitelist — không nhận string lạ từ caller)
+_EVIDENCE_PATH_COLUMNS = ("evidence_path", "verify_evidence_path")
 
-async def read_evidence(pool: asyncpg.Pool, candidate_id: int) -> dict | None:
-    """Nội dung evidence file của Candidate (evidence viewer). Path trong DB
-    luôn phải nằm dưới evidence_dir — chặn truy cập ngoài thư mục evidence."""
+
+async def read_evidence(
+    pool: asyncpg.Pool, candidate_id: int, path_column: str = "evidence_path"
+) -> dict | None:
+    """Nội dung evidence file của Candidate (evidence viewer): `evidence_path`
+    (Detection Phase) hoặc `verify_evidence_path` (vòng xác minh, ticket #12).
+    Path trong DB luôn phải nằm dưới evidence_dir — chặn truy cập ngoài thư
+    mục evidence."""
+    if path_column not in _EVIDENCE_PATH_COLUMNS:
+        raise ValueError(f"cột evidence không hợp lệ: {path_column}")
     async with pool.acquire() as conn:
         path = await conn.fetchval(
-            "SELECT evidence_path FROM candidates WHERE id = $1", candidate_id
+            f"SELECT {path_column} FROM candidates WHERE id = $1", candidate_id
         )
     if not path:
         return None

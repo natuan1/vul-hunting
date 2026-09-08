@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import audit, detect, hermes_client, jobqueue, recon, runner, runs, sandbox, sandbox_mcp, summary, sync, verify
+from . import audit, detect, hermes_client, jobqueue, oob, recon, runner, runs, sandbox, sandbox_mcp, summary, sync, verify
 from .config import settings
 from .db import run_migrations
 from .egress import EgressProxy
@@ -20,11 +20,12 @@ logging.basicConfig(level=logging.INFO)
 pool: asyncpg.Pool | None = None
 _consumer_task: asyncio.Task | None = None
 _proxy_server: asyncio.AbstractServer | None = None
+_oob_task: asyncio.Task | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global pool, _consumer_task, _proxy_server
+    global pool, _consumer_task, _proxy_server, _oob_task
     # jsonb KHÔNG đặt codec toàn cục (set_type_codec 'pg_catalog' không có tác
     # dụng với asyncpg 0.30) — parse tường minh ở 2 điểm tiêu thụ:
     # runs.get_run và runner.execute_run
@@ -61,10 +62,14 @@ async def lifespan(app: FastAPI):
                 pool, runner.HANDLERS, runner.DEAD_HANDLERS, worker_id, runner.RETRY_HANDLERS
             )
         )
+        # poller OOB (ticket #13): callback từ Internet gắn vào Candidate đang
+        # chờ verify + sweep registration hết hạn + dọn callback cache
+        _oob_task = asyncio.create_task(oob.poll_forever(pool))
         yield
-        if _consumer_task is not None:
-            _consumer_task.cancel()
-            await asyncio.gather(_consumer_task, return_exceptions=True)
+        for task in (_consumer_task, _oob_task):
+            if task is not None:
+                task.cancel()
+        await asyncio.gather(_consumer_task, _oob_task, return_exceptions=True)
     if _proxy_server is not None:
         _proxy_server.close()
         await _proxy_server.wait_closed()
@@ -469,6 +474,77 @@ async def get_candidate_verify_evidence(candidate_id: int) -> dict:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if evidence is None:
         raise HTTPException(status_code=404, detail="verify evidence không tồn tại")
+    return evidence
+
+
+# ─────────────── Interactsh OOB (ticket #13) ───────────────
+
+
+@app.get("/candidates/{candidate_id}/oob")
+async def get_candidate_oob(candidate_id: int) -> dict:
+    """Callback count + chi tiết OOB của Candidate: registration hiện hành của
+    Run (domain riêng per-Run) + danh sách callback (source, protocol,
+    timestamp, raw interaction). 404 nếu Candidate không tồn tại."""
+    assert pool is not None
+    result = await oob.list_for_candidate(pool, candidate_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="candidate không tồn tại")
+    return result
+
+
+class VerifyOobRequest(BaseModel):
+    wait_s: float | None = Field(default=None, gt=0, le=600)  # cửa sổ chờ callback
+    poll_s: float | None = Field(default=None, gt=0, le=60)  # nhịp poll
+
+
+@app.post("/candidates/{candidate_id}/verify-oob")
+async def verify_candidate_oob(candidate_id: int, req: VerifyOobRequest | None = None) -> dict:
+    """Chạy trọn vòng xác minh OOB (ticket #13) cho Candidate blind class
+    'ssrf': ensure registration interactsh per-Run → payload
+    `http://<token>.<domain>` chèn vào param → baseline + PoC qua sandbox →
+    chờ/poll callback trong cửa sổ chờ (mặc định OOB_VERIFY_WAIT_S) → callback
+    về = verified kèm evidence OOB, hết cửa sổ → rejected kèm lý do."""
+    assert pool is not None
+    candidate = await detect.get_candidate(pool, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="candidate không tồn tại")
+    if candidate["class"] not in oob.OOB_VERIFY_CLASSES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"candidate thuộc class '{candidate['class']}' — vòng verify OOB "
+                f"dành cho class {', '.join(oob.OOB_VERIFY_CLASSES)}"
+            ),
+        )
+    try:
+        result = await oob.run_oob_verification(
+            pool, candidate,
+            wait_s=(req.wait_s if req else None),
+            poll_s=(req.poll_s if req else None),
+        )
+    except verify.ProbeBlocked as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except oob.InteractshError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    updated = await detect.get_candidate(pool, candidate_id)
+    return {"candidate": updated, "verify": result}
+
+
+@app.get("/candidates/{candidate_id}/oob-evidence")
+async def get_candidate_oob_evidence(candidate_id: int) -> dict:
+    """Evidence OOB của Candidate (callbacks + phân tích vòng verify OOB) —
+    404 nếu Candidate/chưa có callback/evidence không tồn tại."""
+    assert pool is not None
+    try:
+        evidence = await detect.read_evidence(
+            pool, candidate_id, path_column="oob_evidence_path"
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if evidence is None:
+        raise HTTPException(status_code=404, detail="oob evidence không tồn tại")
     return evidence
 
 

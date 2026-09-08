@@ -74,10 +74,12 @@ def param_key(target: str) -> str:
 
 def build_nuclei_args(rate_limit_rps: float | None, ident: dict[str, str]) -> list[str]:
     """Args cho nuclei: templates baked trong image (không tải lúc chạy),
-    loại template headless (cần browser) và OOB qua interactsh (ticket #13 sẽ
-    bật lại), throttle theo rate limit của Run + header định danh."""
+    loại template headless (cần browser); template OOB dùng interactsh public
+    server (ticket #13) — nuclei tự register/poll riêng cho từng lần chạy và
+    nhúng interaction vào finding JSON, không dùng registration per-Run của
+    worker; throttle theo rate limit của Run + header định danh."""
     args = [
-        "-silent", "-nc", "-j", "-ni",
+        "-silent", "-nc", "-j",
         "-t", settings.nuclei_templates_dir,
         "-etags", "headless",
     ]
@@ -164,7 +166,9 @@ CANDIDATE_COLS = (
     "matcher_name, status, evidence_path, first_seen, "
     # kết quả vòng xác minh (ticket #12)
     "confidence, confidence_threshold, reject_reason, verify_evidence_path, "
-    "verify_session_id, baseline_session_id"
+    "verify_session_id, baseline_session_id, "
+    # OOB callback (ticket #13): count hiển thị UI + path evidence callback
+    "oob_callback_count, oob_evidence_path"
 )
 
 _SELECT_CANDIDATES = f"SELECT {CANDIDATE_COLS}\nFROM candidates\n"
@@ -397,7 +401,7 @@ async def set_status(pool: asyncpg.Pool, candidate_id: int, status: str) -> dict
 EVIDENCE_READ_CAP = 200_000
 
 # cột path evidence được phép đọc (whitelist — không nhận string lạ từ caller)
-_EVIDENCE_PATH_COLUMNS = ("evidence_path", "verify_evidence_path")
+_EVIDENCE_PATH_COLUMNS = ("evidence_path", "verify_evidence_path", "oob_evidence_path")
 
 
 async def read_evidence(

@@ -8,6 +8,8 @@ import {
   confidenceBadgeClass,
   confidenceText,
   fmtTime,
+  oobBadgeClass,
+  oobText,
   severityBadgeClass,
   type Candidate,
 } from "../../_lib/runui";
@@ -31,7 +33,48 @@ type VerifyResult = {
   verify_session_id: number | null;
 };
 
+type OobCallback = {
+  id: number;
+  protocol: string;
+  source: string;
+  unique_id: string;
+  full_id: string;
+  occurred_at: string | null;
+  received_at: string;
+  raw_interaction: Record<string, unknown> | string | null;
+};
+
+type OobRegistration = {
+  id: number;
+  server_url: string;
+  domain: string;
+  correlation_id: string;
+  status: string;
+  expires_at: string;
+};
+
+type OobData = {
+  registration: OobRegistration | null;
+  callbacks: OobCallback[];
+  count: number;
+};
+
+type OobVerifyResult = {
+  verdict: string;
+  score: number;
+  threshold: number;
+  reason: string;
+  signals: string[];
+  patterns: string[];
+  payload: string;
+  token: string;
+  domain: string | null;
+  callbacks: OobCallback[];
+  evidence_path: string | null;
+};
+
 const TRANSITIONS = ["verifying", "verified", "rejected"] as const;
+const OOB_POLL_MS = 5000;
 
 export default function FindingDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -40,6 +83,10 @@ export default function FindingDetailPage() {
   const [verifyEvidence, setVerifyEvidence] = useState<Evidence | null>(null);
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [oob, setOob] = useState<OobData | null>(null);
+  const [oobEvidence, setOobEvidence] = useState<Evidence | null>(null);
+  const [oobVerifying, setOobVerifying] = useState(false);
+  const [oobResult, setOobResult] = useState<OobVerifyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -64,6 +111,18 @@ export default function FindingDetailPage() {
     setVerifyEvidence((await res.json()) as Evidence);
   }, [id]);
 
+  const loadOob = useCallback(async () => {
+    const res = await fetch(`/api/findings/${id}/oob`);
+    if (!res.ok) return;
+    setOob((await res.json()) as OobData);
+  }, [id]);
+
+  const loadOobEvidence = useCallback(async () => {
+    const res = await fetch(`/api/findings/${id}/oob-evidence`);
+    if (!res.ok) return;
+    setOobEvidence((await res.json()) as Evidence);
+  }, [id]);
+
   const runVerify = useCallback(async () => {
     setVerifying(true);
     setError(null);
@@ -86,6 +145,29 @@ export default function FindingDetailPage() {
       setVerifying(false);
     }
   }, [id, loadVerifyEvidence]);
+
+  const runOobVerify = useCallback(async () => {
+    setOobVerifying(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/findings/${id}/verify-oob`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.detail ?? `HTTP ${res.status}`);
+      }
+      setOobResult(body.verify as OobVerifyResult);
+      setCandidate((body.candidate ?? null) as Candidate | null);
+      loadOob().catch(() => {});
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setOobVerifying(false);
+    }
+  }, [id, loadOob]);
 
   const transition = useCallback(
     async (status: string) => {
@@ -116,11 +198,23 @@ export default function FindingDetailPage() {
         setCandidate(await load());
         loadEvidence().catch(() => {});
         loadVerifyEvidence().catch(() => {});
+        loadOob().catch(() => {});
+        loadOobEvidence().catch(() => {});
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
       }
     })();
-  }, [load, loadEvidence, loadVerifyEvidence]);
+  }, [load, loadEvidence, loadVerifyEvidence, loadOob, loadOobEvidence]);
+
+  // Candidate đang "đang xác minh" → poll nhẹ để thấy callback OOB về dần
+  useEffect(() => {
+    if (candidate?.status !== "verifying") return;
+    const timer = setInterval(() => {
+      load().then(setCandidate).catch(() => {});
+      loadOob().catch(() => {});
+    }, OOB_POLL_MS);
+    return () => clearInterval(timer);
+  }, [candidate?.status, load, loadOob]);
 
   if (error && !candidate) {
     return (
@@ -162,6 +256,9 @@ export default function FindingDetailPage() {
             className={confidenceBadgeClass(candidate.status, candidate.confidence)}
           >
             confidence {confidenceText(candidate.confidence, candidate.confidence_threshold)}
+          </span>
+          <span className={oobBadgeClass(candidate.oob_callback_count)}>
+            OOB {oobText(candidate.oob_callback_count)}
           </span>
         </div>
       </div>
@@ -236,6 +333,103 @@ export default function FindingDetailPage() {
         </>
       )}
 
+      {(candidate.class === "ssrf" || (oob && (oob.count > 0 || oob.registration))) && (
+        <>
+          <h2 className="section-title">OOB qua interactsh (blind)</h2>
+          <p className="meta">
+            Registration interactsh <strong>riêng cho Run</strong> — domain payload
+            xoay vòng theo Run, callback từ Internet được gắn về Candidate qua token
+            trong subdomain.
+          </p>
+          {oob?.registration && (
+            <p className="meta">
+              Domain: <code>*.{oob.registration.domain}</code> · server{" "}
+              <code>{oob.registration.server_url}</code> · hết hạn{" "}
+              {fmtTime(oob.registration.expires_at)}
+            </p>
+          )}
+          {candidate.class === "ssrf" && (
+            <div className="btnrow">
+              <button className="btn" disabled={oobVerifying} onClick={runOobVerify}>
+                {oobVerifying
+                  ? "Đang xác minh — chờ callback OOB…"
+                  : "▶ Chạy vòng xác minh OOB (blind SSRF)"}
+              </button>
+            </div>
+          )}
+          {oobVerifying && (
+            <p className="meta">
+              Payload <code>http://&lt;token&gt;.&lt;domain&gt;</code> đã chạy qua
+              sandbox — đang chờ target fetch ra Internet (callback có thể mất
+              tới ~1 phút).
+            </p>
+          )}
+          {oobResult && (
+            <div>
+              <p className="badges">
+                <span
+                  className={
+                    oobResult.verdict === "verified" ? "badge ok" : "badge down"
+                  }
+                >
+                  {oobResult.verdict === "verified" ? "Finding" : "false positive"} ·{" "}
+                  score {oobResult.score.toFixed(2)} / ngưỡng{" "}
+                  {oobResult.threshold.toFixed(2)}
+                </span>
+                <span className="badge info">{oobResult.callbacks.length} callback</span>
+                {oobResult.patterns.map((p) => (
+                  <span key={p} className="badge info">pattern: {p}</span>
+                ))}
+              </p>
+              <p className="meta">
+                {oobResult.reason}
+                {oobResult.payload && (
+                  <>
+                    {" "}· payload: <code>{oobResult.payload}</code>
+                  </>
+                )}
+              </p>
+            </div>
+          )}
+          {oob && oob.count > 0 && (
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Protocol</th>
+                  <th>Source</th>
+                  <th>Timestamp</th>
+                  <th>Full-id</th>
+                </tr>
+              </thead>
+              <tbody>
+                {oob.callbacks.map((cb) => (
+                  <tr key={cb.id}>
+                    <td><span className="badge info">{cb.protocol}</span></td>
+                    <td><code>{cb.source}</code></td>
+                    <td className="note">{fmtTime(cb.occurred_at)}</td>
+                    <td className="note"><code>{cb.full_id}</code></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {oob && oob.count > 0 && (
+            <details>
+              <summary className="meta">Raw interactions ({oob.count})</summary>
+              <div className="logstream">
+                <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>
+                  {JSON.stringify(
+                    oob.callbacks.map((cb) => cb.raw_interaction),
+                    null,
+                    2,
+                  )}
+                </pre>
+              </div>
+            </details>
+          )}
+        </>
+      )}
+
       <h2 className="section-title">Chuyển trạng thái</h2>
       <div className="btnrow">
         {TRANSITIONS.filter((s) => s !== candidate.status).map((s) => (
@@ -288,6 +482,27 @@ export default function FindingDetailPage() {
             </>
           ) : (
             <p className="meta">Đang tải verify evidence…</p>
+          )}
+        </>
+      )}
+
+      {candidate.oob_evidence_path && (
+        <>
+          <h2 className="section-title">OOB evidence (callbacks + phân tích)</h2>
+          {oobEvidence ? (
+            <>
+              <p className="meta">
+                <code>{oobEvidence.path}</code>
+                {oobEvidence.truncated && " (truncated — file đầy đủ trên volume)"}
+              </p>
+              <div className="logstream">
+                <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>
+                  {oobEvidence.content}
+                </pre>
+              </div>
+            </>
+          ) : (
+            <p className="meta">Đang tải OOB evidence…</p>
           )}
         </>
       )}

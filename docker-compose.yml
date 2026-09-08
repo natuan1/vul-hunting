@@ -75,6 +75,14 @@ services:
       # ── vòng xác minh open redirect (ticket #12) ──
       VERIFY_CONFIDENCE_THRESHOLD: ${VERIFY_CONFIDENCE_THRESHOLD:-0.85}
       VERIFY_CANARY_URL: ${VERIFY_CANARY_URL:-https://canary.example/vulhunt-poc}
+      # ── interactsh OOB (ticket #13) — client chạy TRONG worker (ADR-0004),
+      # server public mặc định; self-host interactsh là v2 khi lên VPS ──
+      INTERACTSH_SERVER: ${INTERACTSH_SERVER:-oast.pro,oast.live,oast.site,oast.online,oast.fun,oast.me}
+      OOB_POLL_INTERVAL_S: ${OOB_POLL_INTERVAL_S:-5}
+      OOB_REGISTRATION_TTL_H: ${OOB_REGISTRATION_TTL_H:-24}
+      OOB_CALLBACK_RETENTION_H: ${OOB_CALLBACK_RETENTION_H:-168}
+      OOB_VERIFY_WAIT_S: ${OOB_VERIFY_WAIT_S:-60}
+      OOB_VERIFY_POLL_S: ${OOB_VERIFY_POLL_S:-5}
     ports:
       - "${WORKER_PORT:-8000}:8000"
     volumes:

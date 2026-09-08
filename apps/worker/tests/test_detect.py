@@ -99,7 +99,7 @@ def test_build_nuclei_args_có_templates_ni_silent_và_json(monkeypatch):
     assert "-silent" in args and "-nc" in args and "-j" in args
     assert "-t /home/tooler/nuclei-templates" in flat
     assert "-etags headless" in flat  # không chạy template headless (cần browser)
-    assert "-ni" in args  # chưa có interactsh (ticket #13) — loại template OOB
+    assert "-ni" not in args  # ticket #13: template OOB dùng interactsh public server
     assert "-rl" not in args and "-c" not in args
 
 

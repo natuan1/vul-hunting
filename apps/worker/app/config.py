@@ -65,5 +65,25 @@ class Settings:
         "VERIFY_CANARY_URL", "https://canary.example/vulhunt-poc"
     )
 
+    # ── interactsh OOB (ticket #13, ADR-0004) ──
+    # server public mặc định của interactsh (phân tách phẩy, worker chọn ngẫu
+    # nhiên 1 cái lúc register; https lỗi thì fallback http) — self-host là v2
+    interactsh_server: str = os.environ.get(
+        "INTERACTSH_SERVER",
+        "oast.pro,oast.live,oast.site,oast.online,oast.fun,oast.me",
+    )
+    # nhịp poll nền của worker (poller gắn callback vào Candidate chờ verify)
+    oob_poll_interval_s: float = float(os.environ.get("OOB_POLL_INTERVAL_S", "5"))
+    # registration sống bao lâu (giờ) — đủ dài cho verify class blind kéo dài;
+    # hết hạn → deregister khỏi server + status 'expired' (sạch sẽ)
+    oob_registration_ttl_h: float = float(os.environ.get("OOB_REGISTRATION_TTL_H", "24"))
+    # callback cache giữ bao lâu (giờ) trước khi xoá khỏi DB
+    oob_callback_retention_h: float = float(
+        os.environ.get("OOB_CALLBACK_RETENTION_H", "168")
+    )
+    # cửa sổ chờ callback trong vòng xác minh OOB (blind) + nhịp poll từng lượt
+    oob_verify_wait_s: float = float(os.environ.get("OOB_VERIFY_WAIT_S", "60"))
+    oob_verify_poll_s: float = float(os.environ.get("OOB_VERIFY_POLL_S", "5"))
+
 
 settings = Settings()

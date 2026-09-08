@@ -54,6 +54,28 @@ Key API (OpenRouter, HackerOne, Intigriti) đặt trong `.env` — xem `.env.exa
   kèm lý do + pattern log. UI Findings hiển thị confidence/lý do loại và nút
   chạy vòng xác minh cho class `redirect`. Payload KHÔNG bao giờ được agent
   thực thi trực tiếp.
+- **OOB client: interactsh** (ticket #13, ADR-0004) — client interactsh chạy
+  TRONG worker (server public mặc định `oast.*`, không cần key): mỗi Run có
+  **registration riêng** — domain payload xoay vòng theo Run, không tái sử
+  dụng chéo; registration + key persist trong DB nên worker restart vẫn poll
+  tiếp được. Poller nền gắn **OOB callback** (source, protocol, timestamp,
+  raw interaction) về đúng Candidate qua token trong subdomain; callback cache
+  giữ theo TTL (`OOB_CALLBACK_RETENTION_H`) rồi xoá sạch, registration hết hạn
+  (`OOB_REGISTRATION_TTL_H`) được deregister. Vòng xác minh OOB cho Candidate
+  blind class `ssrf` (skill hermes `oob-ssrf-verify` + MCP tool
+  `verify_oob_ssrf` + nút trên Findings): payload
+  `http://<token>.<domain>` chèn vào param chạy qua sandbox → chờ callback
+  → callback về = verified kèm evidence OOB, hết cửa sổ chờ = rejected.
+  Template nuclei OOB cũng được bật lại (bỏ `-ni`) — nuclei tự register
+  riêng từng lần chạy và nhúng interaction vào finding JSON. UI Findings
+  hiển thị callback count + chi tiết trên Candidate.
+
+  Giới hạn đã ghi nhận (môi trường): nếu mạng đang dùng có thiết bị can thiệp
+  TLS (FortiGate/corporate proxy) ký lại chứng chỉ của `oast.*` bằng CA riêng
+  thì worker không verify được HTTPS tới interactsh — register sẽ fail trên
+  mọi server. Cách khắc phục: xuất root CA của thiết bị (Fortinet) thành file
+  PEM, mount vào container worker và trỏ `SSL_CERT_FILE` (httpx tự dùng) —
+  xem `.env.example` phần ticket #13.
 - **Sandbox bridge** (ticket #11, ADR-0003) — Hermes Agent gọi MCP tool
   `run_in_sandbox(script, target, timeout)` qua toolset `mcp_servers.sandbox`
   trong `config/hermes/config.yaml`: mỗi lần gọi worker quay một container

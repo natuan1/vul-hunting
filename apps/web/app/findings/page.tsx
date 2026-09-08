@@ -7,6 +7,8 @@ import {
   confidenceBadgeClass,
   confidenceText,
   fmtTime,
+  oobBadgeClass,
+  oobText,
   severityBadgeClass,
   type Candidate,
 } from "../_lib/runui";
@@ -129,6 +131,7 @@ export default function FindingsPage() {
               <th>Template</th>
               <th>Trạng thái</th>
               <th>Confidence</th>
+              <th>OOB</th>
               <th>Run</th>
               <th>Phát hiện</th>
             </tr>
@@ -159,6 +162,11 @@ export default function FindingsPage() {
                 <td>
                   <span className={confidenceBadgeClass(c.status, c.confidence)}>
                     {confidenceText(c.confidence, c.confidence_threshold)}
+                  </span>
+                </td>
+                <td>
+                  <span className={oobBadgeClass(c.oob_callback_count)}>
+                    {oobText(c.oob_callback_count)}
                   </span>
                 </td>
                 <td>

@@ -44,6 +44,9 @@ export type Candidate = {
   confidence_threshold: number | null;
   reject_reason: string | null;
   verify_evidence_path: string | null;
+  // OOB callback (ticket #13)
+  oob_callback_count: number;
+  oob_evidence_path: string | null;
 };
 
 export function severityBadgeClass(severity: string): string {
@@ -79,4 +82,15 @@ export function confidenceText(score: number | null, threshold: number | null): 
   if (score === null) return "—";
   const base = score.toFixed(2);
   return threshold !== null ? `${base} / ${threshold.toFixed(2)}` : base;
+}
+
+// ── OOB callback (ticket #13) ──
+
+// Badge callback OOB: xanh khi có callback (bằng chứng blind), xám khi chưa có
+export function oobBadgeClass(count: number): string {
+  return count > 0 ? "badge ok" : "badge";
+}
+
+export function oobText(count: number): string {
+  return count > 0 ? `${count} callback` : "—";
 }

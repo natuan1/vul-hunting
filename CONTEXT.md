@@ -76,6 +76,18 @@ pattern log; đường dẫn nằm trong `candidates.verify_evidence_path`, xem 
 `GET /candidates/{id}/verify-evidence`.
 _Avoid_: proof (dùng chung chung), log verify
 
+**OOB Callback**:
+Tương tác từ Internet (DNS/HTTP/SMTP...) về interactsh — bằng chứng quyết định của các
+lỗ hổng blind; gồm source, protocol, timestamp và raw interaction, gắn vào Candidate
+qua token nhúng trong subdomain payload, xem qua `GET /candidates/{id}/oob`.
+_Avoid_: pingback, callback (đơn thuần), hit
+
+**OOB Registration**:
+Đăng ký interactsh RIÊNG cho một Run — domain payload xoay vòng theo Run, không tái sử
+dụng chéo; có TTL (hết hạn → deregister sạch sẽ), persist trong DB để poll tiếp qua
+worker restart.
+_Avoid_: collaborator session, interactsh session
+
 ### AI
 
 **Hermes Agent**:

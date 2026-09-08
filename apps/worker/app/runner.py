@@ -13,7 +13,7 @@ import logging
 
 import asyncpg
 
-from . import detect, jobqueue, recon
+from . import detect, jobqueue, oob, recon
 from .tools import add_log, clear_artifacts
 
 log = logging.getLogger("runner")
@@ -36,6 +36,8 @@ async def mark_run_failed(pool: asyncpg.Pool, job: asyncpg.Record, error: str) -
         job["run_id"],
         error[:500],
     )
+    # Run chết → đóng registration OOB (hết hạn sạch sẽ, không poll_domain mồ côi)
+    await oob.close_run_registrations(pool, job["run_id"])
     await add_log(
         pool,
         job["run_id"],
@@ -106,6 +108,9 @@ async def execute_run(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
         "UPDATE runs SET status = 'completed', finished_at = now() WHERE id = $1",
         run_id,
     )
+    # Run xong → deregister interactsh (domain per-Run không tái sử dụng chéo;
+    # verify về sau sẽ tự register domain mới nếu cần, vẫn gắn Run cũ)
+    closed = await oob.close_run_registrations(pool, run_id)
     await add_log(
         pool,
         run_id,
@@ -113,7 +118,8 @@ async def execute_run(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
         f"{recon_summary['live_hosts']} live host · "
         f"{recon_summary['urls']} URL ({recon_summary['urls_classed']} có nhãn class) · "
         f"{detection_summary['candidates']} Candidate · "
-        f"{recon_summary['blocked'] + detection_summary['blocked']} target bị Scope Validator chặn",
+        f"{recon_summary['blocked'] + detection_summary['blocked']} target bị Scope Validator chặn"
+        + (f" · đóng {closed} registration OOB" if closed else ""),
     )
     log.info("run %d hoàn tất", run_id)
 

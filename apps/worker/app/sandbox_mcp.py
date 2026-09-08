@@ -25,7 +25,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import detect, sandbox, verify
+from . import detect, oob, sandbox, verify
 from .config import settings
 
 log = logging.getLogger("sandbox_mcp")
@@ -105,6 +105,37 @@ async def _verify_open_redirect(
     }
 
 
+async def _verify_oob(candidate_id: int) -> dict[str, Any]:
+    """Phần thực thi của tool verify OOB (tách khỏi decorator để test monkeypatch)."""
+    if _pool is None:
+        raise RuntimeError("worker chưa sẵn sàng (pool chưa bind)")
+    candidate = await detect.get_candidate(_pool, candidate_id)
+    if candidate is None:
+        return {
+            "status": "error",
+            "reason": f"Candidate #{candidate_id} không tồn tại",
+        }
+    if candidate["class"] not in oob.OOB_VERIFY_CLASSES:
+        return {
+            "status": "error",
+            "reason": (
+                f"Candidate #{candidate_id} thuộc class '{candidate['class']}' — "
+                "tool này chỉ dành cho class blind "
+                f"{', '.join(oob.OOB_VERIFY_CLASSES)} (xác minh bằng callback OOB)"
+            ),
+        }
+    result = await oob.run_oob_verification(_pool, candidate)
+    return {
+        **result,
+        "note": (
+            "evidence OOB (callbacks + phân tích): "
+            f"GET /candidates/{candidate_id}/oob-evidence · domain payload "
+            f"riêng của Run: {result.get('domain')} · ngưỡng confidence: "
+            f"{result.get('threshold')}"
+        ),
+    }
+
+
 def build_mcp() -> FastMCP:
     """Tạo FastMCP server (mỗi instance chỉ chạy lifespan 1 lần — production
     dùng singleton bên dưới, test tạo instance riêng khi cần)."""
@@ -172,6 +203,28 @@ def build_mcp() -> FastMCP:
         verify_session_id. Status 'error' nếu candidate không tồn tại/sai class.
         """
         return await _verify_open_redirect(candidate_id, payload)
+
+    @server.tool()
+    async def verify_oob_ssrf(candidate_id: int) -> dict[str, Any]:
+        """Xác minh agentic 1 Candidate blind class 'ssrf' bằng OOB callback
+        (ticket #13) — đi trọn vòng: đăng ký interactsh RIÊNG cho Run (domain
+        payload xoay vòng per-Run, không tái sử dụng chéo) → payload
+        `http://<token>.<domain>` chèn vào param của Candidate → baseline +
+        PoC chạy TRONG sandbox (target có thể fetch payload bằng server-side)
+        → chờ/poll callback từ Internet (~1 phút) → callback về = server-side
+        đã fetch payload → `verified` kèm evidence OOB (source, protocol,
+        timestamp, raw interaction); hết cửa sổ chờ không callback →
+        `rejected` kèm lý do. KHÔNG bao giờ chạy payload trực tiếp.
+
+        Args:
+            candidate_id: id của Candidate class 'ssrf' cần xác minh.
+
+        Returns JSON: candidate_id, verdict (verified|rejected), score,
+        threshold, reason, signals, patterns, payload, token, domain,
+        callbacks (danh sách callback đã gắn), evidence_path. Status 'error'
+        nếu candidate không tồn tại/sai class.
+        """
+        return await _verify_oob(candidate_id)
 
     return server
 

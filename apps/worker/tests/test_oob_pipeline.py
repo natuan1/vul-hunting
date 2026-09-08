@@ -466,6 +466,47 @@ async def test_verify_oob_không_param_rejected_không_chạy_probe():
 
 
 @pytest.mark.asyncio
+async def test_verify_oob_poller_nền_ăn_mất_callback_vẫn_verified_từ_db():
+    """Race double-poll: interactsh /poll XOÁ data sau khi đọc — poller nền
+    (poll_forever) có thể lấy callback TRƯỚC vòng verify nên inline poll luôn
+    về rỗng. Vòng verify phải đối chiếu DB (callback poller nền đã lưu kèm
+    evidence) trước khi kết luận no_oob_callback — không rejected oan dù
+    bằng chứng đã về đúng token."""
+    probe = FakeProbe([_probe_stdout(), _probe_stdout()])
+    pool = _verify_pool([])  # client giả poll rỗng mãi — "server đã bị poller nền đọc sạch"
+    token_id = f"{candidate_token(7, 'ybndrfg8ejkmc')}.abcdefghijklmnopqrst1234567890abc"
+    # poller nền "đã" lưu callback này vào DB cho Candidate #7 — hàng trả về
+    # cho truy vấn đối chiếu DB của vòng verify
+    pool.fetch_script["FROM oob_callbacks"] = [
+        [
+            {
+                "id": 1,
+                "candidate_id": 7,
+                "protocol": "http",
+                "source": "93.184.216.34:443",
+                "unique_id": token_id.split(".")[0],
+                "full_id": token_id,
+                "occurred_at": NOW,
+                "received_at": NOW,
+                "raw_interaction": interaction(token_id),
+            }
+        ]
+    ]
+    summary = await run_oob_verification(pool, CANDIDATE, probe=probe, client=FakeClient())
+
+    assert summary["verdict"] == "verified"
+    assert summary["score"] >= 0.85
+    assert "oob_callback" in summary["signals"]
+    assert summary["patterns"] == []
+    assert [c["full_id"] for c in summary["callbacks"]] == [token_id]
+    verdicts = _verdict_updates(pool)
+    assert verdicts and verdicts[-1][1] == "verified"
+    evidence = json.loads(open(verdicts[-1][5], encoding="utf-8").read())
+    assert evidence["callbacks"][0]["full_id"] == token_id
+    assert evidence["analysis"]["signals"] == ["oob_callback"]
+
+
+@pytest.mark.asyncio
 async def test_verify_oob_target_bị_chặn_trả_lifecycle_về_và_raise():
     from app.verify import ProbeBlocked
 

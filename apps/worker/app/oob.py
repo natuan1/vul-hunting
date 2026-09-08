@@ -27,7 +27,6 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Awaitable, Callable
 from urllib.parse import urlsplit
 
 import asyncpg
@@ -759,6 +758,7 @@ async def run_oob_verification(
         f"RETURNING {CANDIDATE_COLS}",
         candidate_id,
     )
+    verify_started = datetime.now(timezone.utc)
 
     async def _run_probe(url: str) -> dict:
         res = await probe(build_probe_script(url), candidate["target"])
@@ -803,6 +803,24 @@ async def run_oob_verification(
         if remaining <= 0:
             break
         await asyncio.sleep(min(poll_s, remaining) if poll_s > 0 else 0.01)
+
+    if not callbacks:
+        # Race double-poll: interactsh /poll XOÁ data sau khi đọc, mà worker có
+        # poller nền (poll_forever) poll CÙNG registration — poller nền lấy
+        # callback trước thì inline poll luôn về rỗng. Đối chiếu DB (callback
+        # poller nền đã lưu kèm evidence) trước khi kết luận no_oob_callback —
+        # chỉ nhận callback về sau mốc bắt đầu verify để không nhặt rác vòng cũ
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, protocol, source, unique_id, full_id, occurred_at, "
+                "received_at, raw_interaction FROM oob_callbacks "
+                "WHERE candidate_id = $1 AND received_at >= $2 ORDER BY id",
+                candidate_id, verify_started,
+            )
+        for r in rows:
+            item = dict(r)
+            item["raw_interaction"] = _parse_raw_interaction(item.get("raw_interaction"))
+            callbacks.append(item)
 
     if callbacks:
         signals = ["oob_callback"]

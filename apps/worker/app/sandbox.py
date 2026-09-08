@@ -28,6 +28,7 @@ import asyncpg
 
 from .config import settings
 from .egress import EgressContext, EgressRegistry, proxy_credentials
+from . import guardrails
 from .scope_validator import target_host
 from .tools import DB_STDOUT_CAP, TargetBlockedError, add_log, build_context
 
@@ -226,6 +227,9 @@ async def run_verify_session(
     )
 
     started = time.monotonic()
+    # guardrails cap (ticket #19): verify session cũng chiếm 1 slot trong trần
+    # Tool Execution đồng thời — verify song song với recon không được vượt cap
+    await guardrails.CAP.acquire()
     try:
         if runner is None:
             runner = DockerSandboxRunner()
@@ -255,6 +259,7 @@ async def run_verify_session(
                 "reason": f"lỗi môi trường: {exc}"}
     finally:
         reg.unregister(session_id)
+        await guardrails.CAP.release()
 
     elapsed = time.monotonic() - started
     # chạy xong (kể cả exit ≠ 0 — script không xác minh được là dữ liệu, không

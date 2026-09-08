@@ -38,11 +38,10 @@ def R(exit_code=0, stdout="", stderr=""):
 
 @pytest.fixture(autouse=True)
 def _iso(tmp_path, monkeypatch):
-    """Mỗi test có registry guard riêng + artifact ghi vào tmp."""
+    """Mỗi test có registry + cap RIÊNG (không đụng state toàn cục) + artifact ghi tmp."""
     monkeypatch.setattr(config.settings, "artifacts_dir", str(tmp_path / "artifacts"))
     guardrails._guards.clear()
-    guardrails.CAP.limit = config.settings.guardrail_max_concurrent
-    guardrails.CAP._active = 0
+    monkeypatch.setattr(guardrails, "CAP", DynamicCap(config.settings.guardrail_max_concurrent))
 
 
 class GuardFakePool:
@@ -174,6 +173,11 @@ def test_ban_ưu_tiên_trên_rate_limit():
 
 def test_stderr_sạch_exit_đôi_là_không_có_tín_hiệu():
     assert classify(R(1, stderr="nuclei: no results found")) is ErrorKind.NONE
+
+
+def test_mã_số_lồng_trong_số_khác_không_phải_tín_hiệu():
+    # "1403" không phải mã 403 — phân loại theo ranh giới từ, không substring
+    assert classify(R(1, stderr="latency 1403ms, retry 4029")) is ErrorKind.NONE
 
 
 def test_cấu_hình_mặc_định_guardrails():
@@ -412,6 +416,56 @@ async def test_execute_tool_kết_quả_sạch_không_phản_ứng_gì():
     assert result.exit_code == 0
     assert runner.calls == 1
     assert not any("status = 'halted'" in sql for sql, _ in pool.executed)
+
+
+@pytest.mark.asyncio
+async def test_nhiều_run_được_đời_song_song_không_vượt_cap():
+    """AC #19: đãi nhiều Run song song — tổng Tool Execution đồng thời ≤ 4."""
+    from app import tools
+    from app.tools import ToolContext
+
+    class SlowRunner:
+        async def __call__(self, tool, args, stdin=None, docker_args=None):
+            await asyncio.sleep(0.03)
+            return R(0, "ok", "")
+
+    pool = GuardFakePool()
+
+    async def one_run(rid: int):
+        ctx = ToolContext(run_id=rid, limiter=None, ident={}, snapshot=[])
+        return await tools.execute_tool(pool, ctx, "httpx", ["-u", "x"], runner=SlowRunner())
+
+    await asyncio.gather(*(one_run(100 + i) for i in range(8)))
+    assert guardrails.CAP.max_active <= 4  # không bao giờ vượt cap
+    assert guardrails.CAP.max_active == 4  # và bão hoà — cap không vô dụng
+
+
+# ── job reclaim trên Run 'halted' — KHÔNG được tự chạy lại (auto-resume trộm) ──
+
+
+@pytest.mark.asyncio
+async def test_job_reclaim_trên_run_halted_không_tự_chạy_lại(monkeypatch):
+    from app import runner as runner_mod
+
+    pool = GuardFakePool(
+        fetchrow_script=[
+            (
+                "FROM runs r",
+                {"id": 18, "program_name": "p", "platform": "hackerone", "platform_name": "H1"},
+            )
+        ],
+        fetchval_script=[("SELECT status FROM runs", "halted")],
+    )
+
+    async def _boom(*a, **k):
+        raise AssertionError("phase KHÔNG được chạy khi Run đang 'halted'")
+
+    monkeypatch.setattr(runner_mod.recon, "run_recon_phase", _boom)
+    monkeypatch.setattr(runner_mod.detect, "run_detection_phase", _boom)
+    job = {"id": 1, "run_id": 18, "attempts": 1, "max_attempts": 3}
+    await runner_mod.execute_run(pool, job)  # return sớm, không ném, không đổi status
+    assert not any("DELETE FROM tool_executions" in sql for sql, _ in pool.executed)
+    assert not any("status = 'completed'" in sql for sql, _ in pool.executed)
 
 
 # ── scope violation: chặn như cũ + blacklist asset (ticket #19) ──

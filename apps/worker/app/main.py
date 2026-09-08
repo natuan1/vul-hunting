@@ -117,10 +117,8 @@ async def healthz() -> dict:
         # guardrails (ticket #19): cap Tool Execution đồng thời + mức cao nhất
         # đã quan sát trong đời process — bằng chứng "không bao giờ vượt cap"
         "guardrails": {
-            "cap": guardrails.CAP.limit,
-            "active": guardrails.CAP._active,
-            "max_active": guardrails.CAP.max_active,
-            "runs_guarded": len(guardrails._guards),
+            **guardrails.CAP.stats(),
+            "runs_guarded": guardrails.runs_guarded(),
         },
     }
 

@@ -21,6 +21,7 @@ restart chỉ means backoff/streak bắt đầu lại từ đầu, an toàn (hư
 
 import asyncio
 import logging
+import re
 from enum import Enum
 
 import asyncpg
@@ -60,14 +61,11 @@ _BAN_PATTERNS = (
     "blocked by waf",
     "access denied by",
 )
-_RATE_LIMIT_PATTERNS = (
-    "429",
-    "too many requests",
-    "rate limit",
-    "rate-limited",
-    "ratelimit",
-)
-_AUTH_PATTERNS = ("401", "unauthorized", "403", "forbidden")
+_RATE_LIMIT_TEXT = ("too many requests", "rate limit", "rate-limited", "ratelimit")
+_AUTH_TEXT = ("unauthorized", "forbidden", "access denied")
+# mã HTTP soi theo ranh giới từ — "1403"/"4029" không phải mã 403/429
+_CODE_429 = re.compile(r"\b429\b")
+_CODE_40X = re.compile(r"\b40[13]\b")
 
 
 def classify(result) -> ErrorKind:
@@ -85,9 +83,9 @@ def classify(result) -> ErrorKind:
         return ErrorKind.TIMEOUT
     if result.exit_code == 0:
         return ErrorKind.NONE
-    if any(p in text for p in _RATE_LIMIT_PATTERNS):
+    if any(p in text for p in _RATE_LIMIT_TEXT) or _CODE_429.search(text):
         return ErrorKind.RATE_LIMIT
-    if any(p in text for p in _AUTH_PATTERNS):
+    if any(p in text for p in _AUTH_TEXT) or _CODE_40X.search(text):
         return ErrorKind.AUTH_ERROR
     return ErrorKind.NONE
 
@@ -128,8 +126,7 @@ class RunGuard:
             if timeout_max_retries is None
             else timeout_max_retries
         )
-        self.rate_stage = 0
-        self.rate_retries_used = 0
+        self.rate_stage = 0  # vừa là mức backoff vừa là số lượt retry đã dùng
         self.auth_streak = 0
         self.auth_retries_used = 0
         self.timeout_retries_used = 0
@@ -139,11 +136,11 @@ class RunGuard:
         """Ghi nhận 1 lần bị rate limit → delay cho lần thử lại (x2, trần cap)."""
         delay = min(self.base_s * 2**self.rate_stage, self.cap_s)
         self.rate_stage += 1
-        self.rate_retries_used += 1
         return delay
 
     def rate_retry_left(self) -> bool:
-        return self.rate_retries_used < self.rate_max
+        """Còn lượt backoff cho rate limit (chống loop vô hạn)."""
+        return self.rate_stage < self.rate_max
 
     def note_auth_like(self) -> int:
         """Ghi nhận 1 kết quả 401/403 → độ dài chuỗi liên tiếp hiện tại."""
@@ -151,9 +148,11 @@ class RunGuard:
         return self.auth_streak
 
     def ban_triggered(self) -> bool:
+        """Chuỗi 401/403 đã đủ dài để coi là tín hiệu bị cấm."""
         return self.auth_streak >= self.ban_threshold
 
     def auth_retry_left(self) -> bool:
+        """Còn lượt retry auth (tối đa guardrail_auth_max_retries)."""
         return self.auth_retries_used < self.auth_max
 
     def note_auth_retry(self) -> None:
@@ -166,13 +165,13 @@ class RunGuard:
         return self.timeout_s
 
     def timeout_retry_left(self) -> bool:
+        """Còn lượt retry sau khi kéo dài timeout."""
         return self.timeout_retries_used < self.timeout_max_retries
 
     def note_clean(self) -> None:
         """Kết quả sạch — chuỗi 40x đứt, backoff về mốc đầu (timeout học được
         thì GIỮ: tool vẫn cần thời gian đó ở lần sau)."""
         self.rate_stage = 0
-        self.rate_retries_used = 0
         self.auth_streak = 0
         self.auth_retries_used = 0
         self.timeout_retries_used = 0
@@ -190,12 +189,14 @@ class DynamicCap:
         self._cond = asyncio.Condition()
 
     async def acquire(self) -> None:
+        """Chờ tới khi còn chỗ trong trần rồi chiếm 1 slot."""
         async with self._cond:
             await self._cond.wait_for(lambda: self._active < self.limit)
             self._active += 1
             self.max_active = max(self.max_active, self._active)
 
     async def release(self) -> None:
+        """Trả lại 1 slot và đánh thức người đang chờ."""
         async with self._cond:
             self._active -= 1
             self._cond.notify_all()
@@ -204,6 +205,14 @@ class DynamicCap:
         """Hạ trần 1 đơn vị (sàn 1) — strategy timeout."""
         self.limit = max(1, self.limit - 1)
         return self.limit
+
+    def stats(self) -> dict:
+        """Ảnh chụp chỉ số cho /healthz — bằng chứng không vượt trần."""
+        return {
+            "cap": self.limit,
+            "active": self._active,
+            "max_active": self.max_active,
+        }
 
 
 # cap toàn cục của worker — mọi execute_tool chờ qua đây trước khi launch
@@ -223,6 +232,11 @@ def for_run(run_id: int) -> RunGuard:
 def reset_run(run_id: int) -> None:
     """Xoá trạng thái guard (Run resume/hết) — lần sau bắt đầu sạch sẽ."""
     _guards.pop(run_id, None)
+
+
+def runs_guarded() -> int:
+    """Số Run đang có trạng thái guard trong process (cho /healthz)."""
+    return len(_guards)
 
 
 async def _log(pool: asyncpg.Pool, run_id: int, message: str, level: str = "warn") -> None:
@@ -346,19 +360,23 @@ async def resume_run(pool: asyncpg.Pool, run_id: int) -> bool:
 # ── scope violation: blacklist asset (chặn cả các Run sau) ──
 
 
-async def blacklist_asset(pool: asyncpg.Pool, program_id: int, host: str, reason: str) -> None:
-    """Đưa asset vào blacklist của Program — idempotent (ON CONFLICT bỏ qua)."""
+async def blacklist_asset(
+    pool: asyncpg.Pool, program_id: int, asset_identifier: str, reason: str
+) -> None:
+    """Đưa asset (chuỗi identifier chuẩn hoá về host) vào blacklist của Program —
+    idempotent (ON CONFLICT bỏ qua)."""
     async with pool.acquire() as conn:
         await conn.execute(
             "INSERT INTO asset_blacklist (program_id, host, reason) "
             "VALUES ($1, $2, $3) ON CONFLICT (program_id, host) DO NOTHING",
             program_id,
-            host,
+            asset_identifier,
             reason[:500],
         )
 
 
-async def is_blacklisted(pool: asyncpg.Pool, program_id: int, host: str) -> bool:
+async def is_blacklisted(pool: asyncpg.Pool, program_id: int | None, asset_identifier: str) -> bool:
+    """Asset đã nằm trong blacklist của Program chưa — None program thì không."""
     if program_id is None:
         return False
     async with pool.acquire() as conn:
@@ -366,7 +384,7 @@ async def is_blacklisted(pool: asyncpg.Pool, program_id: int, host: str) -> bool
             await conn.fetchval(
                 "SELECT 1 FROM asset_blacklist WHERE program_id = $1 AND host = $2",
                 program_id,
-                host,
+                asset_identifier,
             )
             is not None
         )

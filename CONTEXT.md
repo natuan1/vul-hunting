@@ -29,6 +29,22 @@ _Avoid_: whitelist, targets list
 Thành phần chặn cứng (hard block) mọi hành động kiểm thử nhắm vào Asset không thuộc Scope của Program đang chạy.
 _Avoid_: safety check, guard, filter
 
+**Guardrails**:
+Lớp phân loại lỗi TRƯỚC rồi phản ứng SAU cho mọi Tool Execution (module `app/guardrails.py`): rate limit → backoff luỹ thừa x2 trần 1 giờ; ban signal (CAPTCHA, chuỗi 401/403 liên tiếp) → HALT Run; auth error → retry tối đa 3; timeout → kéo dài timeout + giảm parallelism; asset ngoài Scope → blacklist. Cũng là tên cap đồng thời (`GUARDRAIL_MAX_CONCURRENT`, mặc định 4) chặn tổng Tool Execution + Verify Session đang chạy.
+_Avoid_: retry logic, error handler, guard (đè nhầm Scope Validator)
+
+**HALT**:
+Trạng thái `halted` của Run khi Guardrails thấy tín hiệu bị cấm — Run dừng TOÀN BỘ, UI cảnh báo đỏ, KHÔNG auto-resume (job không retry, job reclaim cũng không tự chạy lại).
+_Avoid_: paused, stopped, cancel
+
+**Resume**:
+Hành động bấm tay DUY NHẤT đưa Run khỏi HALT về `pending` và xếp hàng lại (`POST /runs/{id}/resume`).
+_Avoid_: restart, retry, continue
+
+**Asset Blacklist**:
+Danh sách asset bị cấm vĩnh viễn theo Program (`asset_blacklist`) — target bị Scope Validator chặn vì NGOÀI Scope được đưa vào đây để các Run sau chặn NGAY từ validate. Gỡ là thao tác tay của người dùng (scope mở rộng là quyết định con người).
+_Avoid_: denylist, ban list
+
 ### Hunting
 
 **Run**:

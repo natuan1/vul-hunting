@@ -6,7 +6,7 @@
 CREATE TABLE IF NOT EXISTS runs (
     id                 SERIAL PRIMARY KEY,
     program_id         INTEGER NOT NULL REFERENCES programs(id) ON DELETE CASCADE,
-    status             TEXT NOT NULL DEFAULT 'pending', -- pending | running | completed | failed
+    status             TEXT NOT NULL DEFAULT 'pending', -- pending | running | completed | failed | halted (guardrail, 0012/#19)
     rate_limit_rps     REAL,                            -- req/s tối đa cho mọi request trong Run; NULL = không giới hạn
     ident_header_name  TEXT,                            -- header định danh, vd 'X-Bug-Bounty'
     ident_header_value TEXT,                            -- vd 'HackerOne-<username>'

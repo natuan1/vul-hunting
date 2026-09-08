@@ -82,6 +82,13 @@ async def execute_run(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
         "error = NULL WHERE id = $1 AND status = 'pending'",
         run_id,
     )
+    # guardrail HALT (ticket #19): job reclaim (consumer cũ chết sau khi halt_run
+    # ghi DB nhưng trước khi kịp complete job) KHÔNG được tự chạy lại — đó là
+    # auto-resume trộm. Chỉ resume tay (status về 'pending') mới chạy lại được.
+    status_now = await pool.fetchval("SELECT status FROM runs WHERE id = $1", run_id)
+    if status_now == "halted":
+        log.warning("run %d đang 'halted' — bỏ qua job reclaim, chờ người dùng resume", run_id)
+        return
     # attempt mới = bộ Tool Execution mới (log giữ nguyên để còn xem dấu vết retry;
     # recon_assets KHÔNG xoá — upsert gộp sources nên chạy lại chỉ bổ sung)
     await pool.execute("DELETE FROM tool_executions WHERE run_id = $1", run_id)

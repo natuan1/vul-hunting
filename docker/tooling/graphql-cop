@@ -1,0 +1,6 @@
+#!/bin/sh
+# wrapper graphql-cop (ticket #15) — repo clone pin commit trong image:
+#   github.com/dolevf/graphql-cop @ GRAPHQL_COP_COMMIT
+# deps trong venv riêng (requests/simplejson/termcolor/PySocks theo
+# requirements.txt của repo).
+exec /opt/graphql-cop/venv/bin/python /opt/graphql-cop/graphql-cop.py "$@"

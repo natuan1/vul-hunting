@@ -1,0 +1,5 @@
+#!/bin/sh
+# wrapper graphw00f (ticket #15) — repo clone pin commit trong image
+# (PyPI chỉ có package placeholder trùng tên, không phải tool thật):
+#   github.com/dolevf/graphw00f @ GRAPHW00F_COMMIT
+exec /opt/graphw00f/venv/bin/python /opt/graphw00f/main.py "$@"

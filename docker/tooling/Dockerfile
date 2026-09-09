@@ -21,6 +21,12 @@ RUN git clone --quiet --branch "${SUBZY_REF}" --depth 1 \
  && cd /src/subzy \
  && CGO_ENABLED=0 go build -o /out/subzy .
 
+# ── stage build crlfuzz (ticket #15 — go install pin theo tag) ──
+FROM golang:1.24-bookworm AS crlfuzz-builder
+ARG CRLFUZZ_REF=v1.4.1
+RUN go install github.com/dwisiswant0/crlfuzz/cmd/crlfuzz@${CRLFUZZ_REF} \
+ && cp "$(go env GOPATH)/bin/crlfuzz" /out/crlfuzz
+
 FROM debian:bookworm-slim
 
 ARG TARGETARCH=amd64
@@ -39,6 +45,12 @@ ARG NUCLEI_VERSION=3.11.1
 # chính thức của release templates (asset tar.gz không attach nhưng checksum có)
 ARG NUCLEI_TEMPLATES_VERSION=10.4.8
 ARG NUCLEI_TEMPLATES_SHA256=53ae80d9bcfff638fbff62c4b730c436564b6bf5e05cf4f86a7eefe37c7ecc47
+# batch A (ticket #15): tool chuyên dụng — pin commit HEAD của repo gốc
+# (PyPI chỉ có package placeholder trùng tên, KHÔNG phải tool thật)
+ARG CRLFUZZ_REF=v1.4.1
+ARG GRAPHW00F_COMMIT=4901f824140a2da168876412593c213afbdd75fb
+ARG GRAPHQL_COP_COMMIT=2b7e086efae672f28b419c7fcdfe6b48d846c9dc
+ARG SSTIMAP_COMMIT=1c27fdb4a4cc7d55b66fc0e16937ee7de7047490
 
 LABEL org.opencontainers.image.title="vulhunt-tooling" \
       org.opencontainers.image.description="Recon + detection CLI tools: subfinder/amass/dnsx/naabu/httpx/katana/gau/waymore/gf/nuclei" \
@@ -147,6 +159,32 @@ RUN curl --retry 5 --retry-delay 3 -sfL "https://github.com/projectdiscovery/nuc
  && mv /tmp/nuclei-templates/* /home/tooler/nuclei-templates/ \
  && chmod -R a+rX /home/tooler/nuclei-templates \
  && rm -rf /tmp/nuclei-templates /tmp/nuclei-templates.tar.gz
+
+# ── batch A (ticket #15): GraphQL/CRLF/SSTI chuyên dụng — clone repo gốc pin
+# commit, mỗi tool 1 venv riêng theo requirements của nó; wrappers chuẩn hoá
+# I/O cho worker (tool names: graphw00f, graphql-cop, sstimap) ──
+RUN git clone --quiet https://github.com/dolevf/graphw00f /opt/graphw00f \
+ && git -C /opt/graphw00f checkout --quiet "${GRAPHW00F_COMMIT}" \
+ && python3 -m venv /opt/graphw00f/venv \
+ && /opt/graphw00f/venv/bin/pip install --no-cache-dir requests
+
+RUN git clone --quiet https://github.com/dolevf/graphql-cop /opt/graphql-cop \
+ && git -C /opt/graphql-cop checkout --quiet "${GRAPHQL_COP_COMMIT}" \
+ && python3 -m venv /opt/graphql-cop/venv \
+ && /opt/graphql-cop/venv/bin/pip install --no-cache-dir -r /opt/graphql-cop/requirements.txt
+
+RUN git clone --quiet https://github.com/vladko312/SSTImap /opt/sstimap \
+ && git -C /opt/sstimap checkout --quiet "${SSTIMAP_COMMIT}" \
+ && python3 -m venv /opt/sstimap/venv \
+ && /opt/sstimap/venv/bin/pip install --no-cache-dir -r /opt/sstimap/requirements.txt \
+ && chmod -R a+rX /opt/graphw00f /opt/graphql-cop /opt/sstimap
+
+COPY --from=crlfuzz-builder /out/crlfuzz /usr/local/bin/crlfuzz
+COPY graphw00f /usr/local/bin/graphw00f
+COPY graphql-cop /usr/local/bin/graphql-cop
+COPY sstimap /usr/local/bin/sstimap
+RUN chmod 755 /usr/local/bin/crlfuzz /usr/local/bin/graphw00f \
+  /usr/local/bin/graphql-cop /usr/local/bin/sstimap
 
 # thư mục làm việc ghi được (amass v4/v5 cần nơi lưu graph db tạm trong container,
 # waymore lần chạy đầu ghi config.yml vào ~/.config/waymore, nuclei cần ~/.config)

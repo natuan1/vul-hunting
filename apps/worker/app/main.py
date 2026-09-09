@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import audit, detect, guardrails, hermes_client, jobqueue, oob, recon, runner, runs, sandbox, sandbox_mcp, summary, sync, takeover, verify
+from . import audit, detect, guardrails, hermes_client, httpverify, jobqueue, oob, recon, runner, runs, sandbox, sandbox_mcp, summary, sync, takeover, verify
 from .config import settings
 from .db import run_migrations
 from .egress import EgressProxy
@@ -599,6 +599,37 @@ async def verify_candidate_takeover(candidate_id: int) -> dict:
     try:
         result = await takeover.run_takeover_verification(pool, candidate)
     except verify.ProbeBlocked as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    updated = await detect.get_candidate(pool, candidate_id)
+    return {"candidate": updated, "verify": result}
+
+
+@app.post("/candidates/{candidate_id}/verify-http")
+async def verify_candidate_http(candidate_id: int, req: VerifyCandidateRequest | None = None) -> dict:
+    """Chạy trọn vòng xác minh batch A (ticket #15) cho 7 lớp HTTP-only: cors,
+    dirlist, graphql, crlf, ssti, headers, disclosure — confirm tool output +
+    baseline diff qua sandbox → confidence ≥ ngưỡng → verified kèm evidence,
+    dưới ngưỡng → rejected. Class 'headers' chỉ informational: chỉ thu evidence
+    + ép severity thấp, KHÔNG đổi status (không tự tạo report)."""
+    assert pool is not None
+    candidate = await detect.get_candidate(pool, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="candidate không tồn tại")
+    if candidate["class"] not in httpverify.HTTP_VERIFY_CLASSES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"candidate thuộc class '{candidate['class']}' — vòng verify HTTP "
+                f"dành cho class {', '.join(httpverify.HTTP_VERIFY_CLASSES)}"
+            ),
+        )
+    try:
+        result = await httpverify.run_http_verification(
+            pool, candidate, payload=(req.payload if req else None)
+        )
+    except httpverify.ProbeBlocked as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

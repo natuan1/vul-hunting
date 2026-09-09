@@ -123,6 +123,20 @@ verify dừng chờ người dùng xác minh tay (vd takeover match fingerprint 
 hình hosting deploy PoC), kèm hướng dẫn trong evidence; không phải verdict.
 _Avoid_: pending, skipped, unverified
 
+**Informational**:
+Thuộc tính của một số lớp Candidate (hiện là `headers` — missing security headers) chỉ
+hiển thị để tham khảo: verify chỉ thu thập Evidence (headers thiếu) + ép severity trần
+`low`, KHÔNG bao giờ đổi status/verdict — không bao giờ tự thành Finding hay report.
+_Avoid_: false positive (khác — rejected là verdict), noise
+
+**HTTP-only Classes**:
+Bảy lớp lỗ hổng của catalog batch A — `cors` (CORS misconfig), `dirlist` (directory
+listing), `graphql` (introspection), `crlf` (CRLF injection), `ssti`, `headers`
+(missing security headers), `disclosure` (info disclosure/debug endpoints); mỗi lớp có
+detection (nuclei templates + graphql-cop/graphw00f/crlfuzz/SSTImap cho 3 lớp chuyên
+dụng) và một verify skill riêng xác minh bằng confirm tool output + baseline diff.
+_Avoid_: catalog classes (dài), web classes
+
 ### AI
 
 **Hermes Agent**:

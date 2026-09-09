@@ -25,7 +25,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import detect, oob, sandbox, takeover, verify
+from . import detect, httpverify, oob, sandbox, takeover, verify
 from .config import settings
 
 log = logging.getLogger("sandbox_mcp")
@@ -166,6 +166,41 @@ async def _verify_takeover(candidate_id: int) -> dict[str, Any]:
     }
 
 
+async def _verify_http(candidate_id: int, payload: str | None = None) -> dict[str, Any]:
+    """Phần thực thi của tool verify batch A (tách khỏi decorator để test monkeypatch)."""
+    if _pool is None:
+        raise RuntimeError("worker chưa sẵn sàng (pool chưa bind)")
+    candidate = await detect.get_candidate(_pool, candidate_id)
+    if candidate is None:
+        return {
+            "status": "error",
+            "reason": f"Candidate #{candidate_id} không tồn tại",
+        }
+    if candidate["class"] not in httpverify.HTTP_VERIFY_CLASSES:
+        return {
+            "status": "error",
+            "reason": (
+                f"Candidate #{candidate_id} thuộc class '{candidate['class']}' — "
+                "tool này chỉ dành cho 7 lớp HTTP-only: "
+                f"{', '.join(httpverify.HTTP_VERIFY_CLASSES)}"
+            ),
+        }
+    result = await httpverify.run_http_verification(_pool, candidate, payload=payload)
+    informational = result.get("verdict") == "informational"
+    return {
+        **result,
+        "note": (
+            "evidence HTTP (baseline + PoC + phân tích): "
+            f"GET /candidates/{candidate_id}/verify-evidence · egress log truy theo "
+            f"verify session #{result.get('verify_session_id')} · ngưỡng confidence: "
+            f"{result.get('threshold')}"
+        ) + (
+            " · class 'headers' CHỈ informational — KHÔNG tự tạo report, chỉ hiển thị"
+            if informational else ""
+        ),
+    }
+
+
 def build_mcp() -> FastMCP:
     """Tạo FastMCP server (mỗi instance chỉ chạy lifespan 1 lần — production
     dùng singleton bên dưới, test tạo instance riêng khi cần)."""
@@ -282,6 +317,39 @@ def build_mcp() -> FastMCP:
         không tồn tại/sai class.
         """
         return await _verify_takeover(candidate_id)
+
+    @server.tool()
+    async def verify_http_class(
+        candidate_id: int,
+        payload: str | None = None,
+    ) -> dict[str, Any]:
+        """Xác minh agentic 1 Candidate thuộc 1 trong 7 lớp HTTP-only của batch A
+        (ticket #15): cors (CORS misconfig), dirlist (directory listing),
+        graphql (introspection), crlf (CRLF injection), ssti, headers (missing
+        security headers), disclosure (info disclosure/debug endpoints) — đi
+        trọn vòng: baseline capture (request vô hại) → PoC tuỳ lớp (Origin
+        canary cho cors, `__schema` cho graphql, `%0d%0a` + header canary cho
+        crlf, `{{7*7}}` cho ssti, path con cho dirlist, root host cho
+        disclosure) → chạy CẢ HAI trong sandbox → phân tích so baseline theo
+        hướng khai thác được (WAF block / payload bị escape / marker có sẵn ở
+        baseline = false positive) → confidence 0.0–1.0; score ≥ ngưỡng (mặc
+        định 0.85) → Finding kèm evidence; dưới ngưỡng → `rejected` kèm lý do.
+        RIÊNG class 'headers': CHỈ informational — thu evidence danh sách
+        headers thiếu + ép severity thấp, KHÔNG đổi status, KHÔNG tự tạo report
+        (chỉ hiển thị cho người dùng cân nhắc).
+
+        Args:
+            candidate_id: id của Candidate thuộc 1 trong 7 lớp HTTP-only.
+            payload: payload tuỳ lớp (origin canary cho cors, giá trị chèn cho
+              crlf/ssti; bỏ trống → canary mặc định).
+
+        Returns JSON: candidate_id, class, verdict
+        (verified|rejected|informational), score, threshold, reason, signals,
+        patterns, detail (headers thiếu/marker trúng…), reportable,
+        evidence_path, baseline_session_id, verify_session_id. Status 'error'
+        nếu candidate không tồn tại/sai class.
+        """
+        return await _verify_http(candidate_id, payload)
 
     return server
 

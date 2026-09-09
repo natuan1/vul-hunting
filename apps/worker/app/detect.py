@@ -43,8 +43,26 @@ STATUSES = ("new", "verifying", "verified", "rejected", "needs_manual")
 # tag nào thì "misc" (CVE, exposure, ...)
 _CLASS_VOCAB = (
     "xss", "sqli", "ssrf", "redirect", "ssti", "lfi", "rce", "idor",
-    "crlf", "cors", "takeover", "exposure", "debug", "misconfig", "disclosure",
+    "crlf", "cors", "graphql", "dirlist", "takeover", "exposure", "debug",
+    "misconfig", "disclosure", "headers",
 )
+
+# tag template → class cho batch A (#15, 7 lớp HTTP-only): tag thực tế trong
+# nuclei templates không trùng tên class (vd "listing", "config") hoặc nhiều
+# tag cùng chỉ 1 lớp (info disclosure/debug endpoints = exposure + debug +
+# disclosure) — map về đúng 7 class của batch, áp dụng TRƯỚC ∩ vocab
+_TAG_CLASS_MAP = {
+    "listing": "dirlist",
+    "config": "headers",
+    "exposure": "disclosure",
+    "debug": "disclosure",
+    "disclosure": "disclosure",
+}
+
+# class chỉ informational (không bao giờ thành Finding/report — chỉ hiển thị);
+# severity mặc định bị ép trần (ticket #15)
+_INFORMATIONAL_CLASSES = ("headers",)
+_INFORMATIONAL_SEVERITY_CAP = "low"
 
 _SEVERITIES = ("info", "low", "medium", "high", "critical")
 
@@ -59,13 +77,29 @@ def parse_nuclei_jsonl(stdout: str) -> list[dict]:
 
 
 def map_class(tags: list) -> str:
-    """Class của Candidate = tag của template khớp vocab (ưu tiên thứ tự
-    vocab); không khớp → 'misc'."""
+    """Class của Candidate: alias tag batch A (#15) trước, rồi tag của template
+    khớp vocab (ưu tiên thứ tự vocab); không khớp → 'misc'."""
     tagset = {str(t).lower() for t in (tags or [])}
+    for tag, cls in _TAG_CLASS_MAP.items():
+        if tag in tagset:
+            return cls
     for cls in _CLASS_VOCAB:
         if cls in tagset:
             return cls
     return "misc"
+
+
+def cap_severity(severity: str, cap: str) -> str:
+    """Severity không vượt quá `cap` theo rank _SEVERITIES (batch A: security
+    headers chỉ informational — severity trần 'low'). Lạ → chính `cap`."""
+    try:
+        return (
+            severity
+            if _SEVERITIES.index(severity) <= _SEVERITIES.index(cap)
+            else cap
+        )
+    except ValueError:
+        return cap
 
 
 def param_key(target: str) -> str:
@@ -285,6 +319,10 @@ async def run_detection_phase(
             continue
         seen_keys.add(key)
         info = finding.get("info") or {}
+        severity = _severity(info.get("severity"))
+        if cls in _INFORMATIONAL_CLASSES:
+            # security headers chỉ informational — severity trần 'low' (#15)
+            severity = cap_severity(severity, _INFORMATIONAL_SEVERITY_CAP)
         rows.append(
             CandidateRow(
                 run_id=run_id,
@@ -293,7 +331,7 @@ async def run_detection_phase(
                 param=key[2],
                 template_id=str(finding.get("template-id") or ""),
                 title=str(info.get("name") or ""),
-                severity=_severity(info.get("severity")),
+                severity=severity,
                 matcher_name=str(finding.get("matcher-name") or ""),
                 status="new",
                 evidence_path=write_evidence(run_id, len(rows) + 1, finding),

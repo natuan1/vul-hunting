@@ -139,6 +139,7 @@ async def test_run_in_sandbox_over_mcp_http(monkeypatch):
                     "verify_open_redirect",
                     "verify_oob_ssrf",
                     "verify_subdomain_takeover",
+                    "verify_http_class",
                 }
 
                 result = await session.call_tool(
@@ -321,6 +322,116 @@ async def test_verify_open_redirect_từ_chối_class_khác_và_id_lạ(monkeypa
                     assert data["status"] == "error"
                     assert want in data["reason"]
                 assert calls == []  # không chạy verify oan cho candidate sai
+    finally:
+        server.should_exit = True
+        await asyncio.gather(task, return_exceptions=True)
+
+
+# ───────────────── verify_http_class qua MCP (batch A, ticket #15) ─────────────────
+
+
+def _stub_httpverify_layer(monkeypatch, candidates: dict, summary: dict, calls: list):
+    """Stub TẦNG DƯỚI (detect.get_candidate + httpverify.run_http_verification)
+    để tool wrapper verify_http_class THẬT (class check + note) đi trọn."""
+    from app import detect, httpverify
+
+    async def fake_get_candidate(pool, candidate_id):
+        return candidates.get(candidate_id)
+
+    async def fake_run(pool, candidate, payload=None, **kw):
+        calls.append({"candidate": candidate, "payload": payload})
+        return summary
+
+    monkeypatch.setattr(detect, "get_candidate", fake_get_candidate)
+    monkeypatch.setattr(httpverify, "run_http_verification", fake_run)
+
+
+@pytest.mark.asyncio
+async def test_verify_http_class_over_mcp_http(monkeypatch):
+    """Batch A (#15): gọi tool verify_http_class trên wire — candidate class
+    'ssti' → pipeline stub → verdict JSON kèm note evidence."""
+    calls: list = []
+    candidate = {"id": 16, "run_id": 7, "class": "ssti",
+                 "target": "https://app.other.com/search?q=x",
+                 "param": "q", "status": "new"}
+    summary = {
+        "candidate_id": 16, "run_id": 7, "class": "ssti",
+        "payload": "{{7*7}}", "verdict": "verified", "score": 0.9,
+        "threshold": 0.85, "reason": "Kết quả phép tính xuất hiện trong PoC",
+        "signals": ["math_evaluated"], "patterns": ["math_evaluated"],
+        "detail": {}, "reportable": True,
+        "evidence_path": "/data/evidence/7/verify/016.json",
+        "baseline_session_id": 101, "verify_session_id": 102,
+    }
+    _stub_httpverify_layer(monkeypatch, {16: candidate}, summary, calls)
+
+    app = await _mcp_app(monkeypatch, _ok_verify([]))
+    server, task, port = await _serve(app)
+    try:
+        headers = {"Authorization": "Bearer test-key"}
+        async with streamablehttp_client(
+            f"http://127.0.0.1:{port}/mcp", headers=headers
+        ) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool(
+                    "verify_http_class", {"candidate_id": 16}
+                )
+                assert result.isError is False
+                data = json.loads(result.content[0].text)
+                assert data["verdict"] == "verified"
+                assert data["class"] == "ssti"
+                assert data["reportable"] is True
+                assert "verify-evidence" in data["note"]
+                assert calls == [{"candidate": candidate, "payload": None}]
+    finally:
+        server.should_exit = True
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_verify_http_class_headers_chỉ_informational_và_từ_chối_class_lạ(monkeypatch):
+    """Class 'headers' vẫn chạy (informational, note cảnh báo không report);
+    class ngoài batch A → JSON status error, pipeline không chạy."""
+    calls: list = []
+    headers_summary = {
+        "candidate_id": 17, "run_id": 7, "class": "headers",
+        "payload": "", "verdict": "informational", "score": 0.0,
+        "threshold": 0.85, "reason": "Chỉ hiển thị",
+        "signals": [], "patterns": ["missing:content-security-policy"],
+        "detail": {"missing": ["content-security-policy"], "present": []},
+        "reportable": False,
+        "evidence_path": "/data/evidence/7/verify/017.json",
+        "baseline_session_id": 103, "verify_session_id": 104,
+    }
+    _stub_httpverify_layer(
+        monkeypatch,
+        {17: {"id": 17, "run_id": 7, "class": "headers",
+              "target": "https://app.other.com/", "param": "", "status": "new"},
+         18: {"id": 18, "run_id": 7, "class": "redirect",
+              "target": "https://app.other.com/r", "param": "next", "status": "new"}},
+        headers_summary, calls,
+    )
+
+    app = await _mcp_app(monkeypatch, _ok_verify([]))
+    server, task, port = await _serve(app)
+    try:
+        headers = {"Authorization": "Bearer test-key"}
+        async with streamablehttp_client(
+            f"http://127.0.0.1:{port}/mcp", headers=headers
+        ) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                res = await session.call_tool("verify_http_class", {"candidate_id": 17})
+                data = json.loads(res.content[0].text)
+                assert data["verdict"] == "informational"
+                assert data["reportable"] is False
+                assert "KHÔNG tự tạo report" in data["note"]
+                res = await session.call_tool("verify_http_class", {"candidate_id": 18})
+                data = json.loads(res.content[0].text)
+                assert data["status"] == "error"
+                assert "7 lớp HTTP-only" in data["reason"]
+                assert len(calls) == 1  # chỉ candidate 17 chạy pipeline
     finally:
         server.should_exit = True
         await asyncio.gather(task, return_exceptions=True)

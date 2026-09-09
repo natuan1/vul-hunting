@@ -24,6 +24,13 @@ type Counts = {
 
 const STATUSES = ["new", "verifying", "verified", "rejected", "needs_manual"] as const;
 
+// Vocab class — batch A (#15): 7 lớp HTTP-only + các class trước đó
+const CLASSES = [
+  "cors", "dirlist", "graphql", "crlf", "ssti", "headers", "disclosure",
+  "xss", "sqli", "ssrf", "redirect", "lfi", "rce", "idor",
+  "takeover", "exposure", "debug", "misconfig", "misc",
+] as const;
+
 export default function FindingsPage() {
   const [items, setItems] = useState<Candidate[]>([]);
   const [counts, setCounts] = useState<Counts | null>(null);
@@ -91,11 +98,17 @@ export default function FindingsPage() {
         </select>
         <input
           type="text"
-          placeholder="class (vd: xss, sqli)"
+          list="class-options"
+          placeholder="class (vd: ssti, cors)"
           value={class_}
           onChange={(e) => setClass(e.target.value)}
           style={{ minWidth: 160 }}
         />
+        <datalist id="class-options">
+          {CLASSES.map((c) => (
+            <option key={c} value={c} />
+          ))}
+        </datalist>
         <input
           type="text"
           placeholder="Run #"

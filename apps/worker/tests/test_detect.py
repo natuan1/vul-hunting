@@ -87,6 +87,28 @@ def test_map_class_không_match_vocab_trả_misc():
     assert map_class([]) == "misc"
 
 
+# ── map_class batch A (#15): 7 lớp HTTP-only ra đúng class qua tag/alias ──
+
+
+def test_map_class_batch_a_bảy_lớp_ra_đúng_class():
+    assert map_class(["cors", "misconfig"]) == "cors"
+    assert map_class(["listing", "misconfig"]) == "dirlist"
+    assert map_class(["graphql", "misconfig"]) == "graphql"
+    assert map_class(["crlf"]) == "crlf"
+    assert map_class(["ssti"]) == "ssti"
+    assert map_class(["config", "misconfig"]) == "headers"
+    # info disclosure/debug endpoints — gộp exposure/debug/disclosure về 1 lớp
+    assert map_class(["exposure"]) == "disclosure"
+    assert map_class(["debug"]) == "disclosure"
+    assert map_class(["disclosure"]) == "disclosure"
+
+
+def test_map_class_batch_a_không_đổi_hành_vi_class_cũ():
+    assert map_class(["xss", "reflected"]) == "xss"
+    assert map_class(["ssrf"]) == "ssrf"
+    assert map_class(["redirect"]) == "redirect"
+
+
 # ── build_nuclei_args ──
 
 
@@ -248,7 +270,33 @@ async def test_pipeline_tạo_candidate_đúng_class_với_evidence_đầy_đủ
 
 
 @pytest.mark.asyncio
-async def test_pipeline_âm_tính_matched_at_ngoài_scope_không_thành_candidate():
+async def test_pipeline_class_headers_ép_severity_không_vượt_low():
+    """#15: security headers chỉ informational — severity mặc định thấp dù
+    template report cao hơn."""
+    headers_finding = {
+        **FINDING,
+        "template-id": "missing-security-header",
+        "info": {
+            "name": "Missing Security Header",
+            "severity": "high",
+            "tags": ["misconfig", "config"],
+        },
+    }
+    runner = FakeRunner({"nuclei": _nuclei_stdout(headers_finding)})
+    pool = FakePool()
+    await run_detection_phase(
+        pool, RUN_ROW, tool_runner=runner,
+        live_urls=["https://app.other.com/login"], classed_urls=[],
+    )
+    rows = _candidate_rows(pool)
+    assert len(rows) == 1
+    assert rows[0][2] == "headers"  # class
+    assert rows[0][6] == "low"      # severity ép về low
+
+
+# ── pipeline âm tính ──
+
+
     evil = {
         **FINDING,
         "host": "https://evil.com",

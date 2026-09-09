@@ -13,7 +13,7 @@ import logging
 
 import asyncpg
 
-from . import detect, guardrails, jobqueue, oob, recon, takeover
+from . import detect, guardrails, httpverify, jobqueue, oob, recon, takeover
 from .tools import add_log, clear_artifacts
 
 log = logging.getLogger("runner")
@@ -103,6 +103,7 @@ async def execute_run(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
 
     heartbeat_task = asyncio.create_task(_heartbeat_loop(pool, job["id"]))
     takeover_summary: dict | None = None
+    catalog_summary: dict | None = None
     try:
         recon_summary = await recon.run_recon_phase(pool, run)
         # Detection Phase (ticket #10) chạy ngay sau Recon trong cùng Run —
@@ -112,6 +113,10 @@ async def execute_run(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
         # takeovers → Candidate class 'takeover' (verify riêng chứng minh
         # kiểm soát bằng PoC page)
         takeover_summary = await takeover.run_takeover_detection(pool, run)
+        # Batch A (ticket #15): tool chuyên dụng cho GraphQL/CRLF/SSTI —
+        # graphql-cop + graphw00f, crlfuzz, sstimap (7 lớp HTTP-only; 4 lớp
+        # còn lại nuclei chính đã cover qua map_class)
+        catalog_summary = await httpverify.run_catalog_detection(pool, run)
     except guardrails.RunHalted:
         # Guardrail HALT (ban signal) — status 'halted' đã ghi trong DB bởi
         # halt_run. Job kết thúc BÌNH THƯỜNG (queue KHÔNG retry → không có
@@ -133,9 +138,13 @@ async def execute_run(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
         f" · {takeover_summary['candidates']} Candidate takeover"
         if takeover_summary else ""
     )
+    catalog_note = (
+        f" · {catalog_summary['candidates']} Candidate batch A (tool chuyên dụng)"
+        if catalog_summary else ""
+    )
     total_blocked = recon_summary["blocked"] + detection_summary["blocked"] + (
         (takeover_summary or {}).get("blocked", 0)
-    )
+    ) + ((catalog_summary or {}).get("blocked", 0))
     await add_log(
         pool,
         run_id,
@@ -143,7 +152,7 @@ async def execute_run(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
         f"{recon_summary['live_hosts']} live host · "
         f"{recon_summary['urls']} URL ({recon_summary['urls_classed']} có nhãn class) · "
         f"{detection_summary['candidates']} Candidate"
-        f"{takeover_note} · "
+        f"{takeover_note}{catalog_note} · "
         f"{total_blocked} target bị Scope Validator chặn"
         + (f" · đóng {closed} registration OOB" if closed else ""),
     )

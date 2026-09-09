@@ -64,6 +64,11 @@ class Settings:
     verify_canary_url: str = os.environ.get(
         "VERIFY_CANARY_URL", "https://canary.example/vulhunt-poc"
     )
+    # Origin "kẻ tấn công" cho verify CORS misconfig (batch A #15) — origin
+    # canary của bạn, target KHÔNG được phép reflect + cho credentials
+    verify_cors_origin: str = os.environ.get(
+        "VERIFY_CORS_ORIGIN", "https://canary-vulhunt.example"
+    )
 
     # ── interactsh OOB (ticket #13, ADR-0004) ──
     # server public mặc định của interactsh (phân tách phẩy, worker chọn ngẫu

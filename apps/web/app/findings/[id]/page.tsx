@@ -93,6 +93,34 @@ type TakeoverVerifyResult = {
   verify_session_id: number | null;
 };
 
+type HttpVerifyResult = {
+  class: string;
+  verdict: string;
+  score: number;
+  threshold: number;
+  reason: string;
+  signals: string[];
+  patterns: string[];
+  detail: { missing?: string[]; present?: string[]; markers?: string[] | { strong: string[]; weak: string[] } };
+  reportable: boolean;
+  payload: string;
+  evidence_path: string | null;
+  baseline_session_id: number | null;
+  verify_session_id: number | null;
+};
+
+// Batch A (ticket #15): 7 lớp HTTP-only dùng chung vòng verify-http
+const HTTP_CLASSES = ["cors", "dirlist", "graphql", "crlf", "ssti", "headers", "disclosure"] as const;
+const HTTP_CLASS_LABEL: Record<string, string> = {
+  cors: "CORS misconfig",
+  dirlist: "Directory listing",
+  graphql: "GraphQL introspection",
+  crlf: "CRLF injection",
+  ssti: "SSTI",
+  headers: "Missing security headers",
+  disclosure: "Info disclosure / debug",
+};
+
 const TRANSITIONS = ["verifying", "verified", "rejected"] as const;
 const OOB_POLL_MS = 5000;
 
@@ -109,6 +137,8 @@ export default function FindingDetailPage() {
   const [oobResult, setOobResult] = useState<OobVerifyResult | null>(null);
   const [takeoverResult, setTakeoverResult] = useState<TakeoverVerifyResult | null>(null);
   const [takeoverVerifying, setTakeoverVerifying] = useState(false);
+  const [httpResult, setHttpResult] = useState<HttpVerifyResult | null>(null);
+  const [httpVerifying, setHttpVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -211,6 +241,29 @@ export default function FindingDetailPage() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setTakeoverVerifying(false);
+    }
+  }, [id, loadVerifyEvidence]);
+
+  const runHttpVerify = useCallback(async () => {
+    setHttpVerifying(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/findings/${id}/verify-http`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.detail ?? `HTTP ${res.status}`);
+      }
+      setHttpResult(body.verify as HttpVerifyResult);
+      setCandidate((body.candidate ?? null) as Candidate | null);
+      loadVerifyEvidence().catch(() => {});
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHttpVerifying(false);
     }
   }, [id, loadVerifyEvidence]);
 
@@ -471,6 +524,77 @@ export default function FindingDetailPage() {
                 </pre>
               </div>
             </details>
+          )}
+        </>
+      )}
+
+      {HTTP_CLASSES.includes(candidate.class as (typeof HTTP_CLASSES)[number]) && (
+        <>
+          <h2 className="section-title">
+            Xác minh batch A — {HTTP_CLASS_LABEL[candidate.class] ?? candidate.class}
+          </h2>
+          {candidate.class === "headers" ? (
+            <p className="meta">
+              Security headers CHỈ informational: chạy để thu thập evidence (danh sách
+              headers thiếu) + ép severity thấp — KHÔNG tự tạo report, không đổi status.
+            </p>
+          ) : (
+            <p className="meta">
+              Baseline capture → PoC tuỳ lớp (Origin canary / `__schema` / `%0d%0a`
+              header canary / `&#123;&#123;7*7&#125;&#125;` / path con / root host) qua
+              sandbox → phân tích so baseline → confidence score. WAF block, payload bị
+              escape hay marker có sẵn ở baseline đều bị loại.
+            </p>
+          )}
+          <div className="btnrow">
+            <button className="btn" disabled={httpVerifying} onClick={runHttpVerify}>
+              {httpVerifying
+                ? "Đang xác minh trong sandbox…"
+                : candidate.class === "headers"
+                  ? "▶ Thu thập evidence (informational)"
+                  : "▶ Chạy vòng xác minh"}
+            </button>
+          </div>
+          {httpResult && (
+            <div>
+              <p className="badges">
+                <span
+                  className={
+                    httpResult.verdict === "verified"
+                      ? "badge ok"
+                      : httpResult.verdict === "informational"
+                        ? "badge"
+                        : "badge down"
+                  }
+                >
+                  {httpResult.verdict === "verified"
+                    ? "Finding"
+                    : httpResult.verdict === "informational"
+                      ? "informational — chỉ hiển thị, KHÔNG report"
+                      : "false positive"}{" "}
+                  · score {httpResult.score.toFixed(2)} / ngưỡng{" "}
+                  {httpResult.threshold.toFixed(2)}
+                </span>
+                {httpResult.patterns.map((p) => (
+                  <span key={p} className="badge info">pattern: {p}</span>
+                ))}
+              </p>
+              <p className="meta">{httpResult.reason}</p>
+              {httpResult.detail?.missing && httpResult.detail.missing.length > 0 && (
+                <p className="badges">
+                  {httpResult.detail.missing.map((h) => (
+                    <span key={h} className="badge down">thiếu: {h}</span>
+                  ))}
+                </p>
+              )}
+              {httpResult.verify_session_id !== null && (
+                <p className="meta">
+                  Verify session: baseline{" "}
+                  <a href={`/runs/${candidate.run_id}`}>#{httpResult.baseline_session_id}</a>{" "}
+                  · PoC #{httpResult.verify_session_id}
+                </p>
+              )}
+            </div>
           )}
         </>
       )}

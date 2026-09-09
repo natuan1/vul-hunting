@@ -1,0 +1,6 @@
+#!/bin/sh
+# wrapper SSTImap (ticket #15) — repo clone pin commit trong image:
+#   github.com/vladko312/SSTImap @ SSTIMAP_COMMIT
+# deps trong venv riêng (requests/urllib3/mechanize/html5lib theo
+# requirements.txt của repo).
+exec /opt/sstimap/venv/bin/python /opt/sstimap/sstimap.py "$@"

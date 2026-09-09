@@ -75,6 +75,9 @@ services:
       # ── vòng xác minh open redirect (ticket #12) ──
       VERIFY_CONFIDENCE_THRESHOLD: ${VERIFY_CONFIDENCE_THRESHOLD:-0.85}
       VERIFY_CANARY_URL: ${VERIFY_CANARY_URL:-https://canary.example/vulhunt-poc}
+      # ── catalog batch A (ticket #15) — 7 lớp HTTP-only; origin canary cho
+      # verify CORS misconfig ──
+      VERIFY_CORS_ORIGIN: ${VERIFY_CORS_ORIGIN:-https://canary-vulhunt.example}
       # ── interactsh OOB (ticket #13) — client chạy TRONG worker (ADR-0004),
       # server public mặc định; self-host interactsh là v2 khi lên VPS ──
       INTERACTSH_SERVER: ${INTERACTSH_SERVER:-oast.pro,oast.live,oast.site,oast.online,oast.fun,oast.me}

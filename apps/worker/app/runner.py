@@ -13,7 +13,7 @@ import logging
 
 import asyncpg
 
-from . import detect, guardrails, jobqueue, oob, recon
+from . import detect, guardrails, jobqueue, oob, recon, takeover
 from .tools import add_log, clear_artifacts
 
 log = logging.getLogger("runner")
@@ -102,11 +102,16 @@ async def execute_run(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
     )
 
     heartbeat_task = asyncio.create_task(_heartbeat_loop(pool, job["id"]))
+    takeover_summary: dict | None = None
     try:
         recon_summary = await recon.run_recon_phase(pool, run)
         # Detection Phase (ticket #10) chạy ngay sau Recon trong cùng Run —
         # recon cho bề mặt (live host + URL đã phân loại class), nuclei chọt
         detection_summary = await detect.run_detection_phase(pool, run)
+        # Lớp takeover (ticket #14): CNAME từ Recon 1 → subzy + nuclei
+        # takeovers → Candidate class 'takeover' (verify riêng chứng minh
+        # kiểm soát bằng PoC page)
+        takeover_summary = await takeover.run_takeover_detection(pool, run)
     except guardrails.RunHalted:
         # Guardrail HALT (ban signal) — status 'halted' đã ghi trong DB bởi
         # halt_run. Job kết thúc BÌNH THƯỜNG (queue KHÔNG retry → không có
@@ -124,14 +129,22 @@ async def execute_run(pool: asyncpg.Pool, job: asyncpg.Record) -> None:
     # Run xong → deregister interactsh (domain per-Run không tái sử dụng chéo;
     # verify về sau sẽ tự register domain mới nếu cần, vẫn gắn Run cũ)
     closed = await oob.close_run_registrations(pool, run_id)
+    takeover_note = (
+        f" · {takeover_summary['candidates']} Candidate takeover"
+        if takeover_summary else ""
+    )
+    total_blocked = recon_summary["blocked"] + detection_summary["blocked"] + (
+        (takeover_summary or {}).get("blocked", 0)
+    )
     await add_log(
         pool,
         run_id,
         f"Run hoàn tất: {recon_summary['subdomains']} subdomain · "
         f"{recon_summary['live_hosts']} live host · "
         f"{recon_summary['urls']} URL ({recon_summary['urls_classed']} có nhãn class) · "
-        f"{detection_summary['candidates']} Candidate · "
-        f"{recon_summary['blocked'] + detection_summary['blocked']} target bị Scope Validator chặn"
+        f"{detection_summary['candidates']} Candidate"
+        f"{takeover_note} · "
+        f"{total_blocked} target bị Scope Validator chặn"
         + (f" · đóng {closed} registration OOB" if closed else ""),
     )
     log.info("run %d hoàn tất", run_id)

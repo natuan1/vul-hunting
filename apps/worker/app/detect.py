@@ -33,8 +33,10 @@ from .tools import (
 
 log = logging.getLogger("detect")
 
-# lifecycle của Candidate (migration 0008 CHECK ràng buộc cùng bộ này)
-STATUSES = ("new", "verifying", "verified", "rejected")
+# lifecycle của Candidate (migration 0008 + 0012 CHECK ràng buộc cùng bộ này);
+# `needs_manual` (#14): fingerprint takeover khớp nhưng chưa chứng minh được
+# kiểm soát — dừng chờ người dùng xác minh tay (claim + PoC page)
+STATUSES = ("new", "verifying", "verified", "rejected", "needs_manual")
 
 # vocab lớp lỗ hổng — thứ tự trong tuple là thứ tự ưu tiên khi 1 template
 # mang nhiều tag khớp (vd tags ["xss","reflected"] → class "xss"); không khớp

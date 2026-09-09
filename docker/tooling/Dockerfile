@@ -13,6 +13,14 @@ RUN git clone --quiet https://github.com/tomnomnom/gf /src/gf \
  && git checkout --quiet "${GF_COMMIT}" \
  && go build -o /out/gf main.go
 
+# ── stage build subzy (ticket #14 — phát hành source, pin theo tag) ──
+FROM golang:1.24-bookworm AS subzy-builder
+ARG SUBZY_REF=v1.2.1
+RUN git clone --quiet --branch "${SUBZY_REF}" --depth 1 \
+      https://github.com/PentestPad/subzy /src/subzy \
+ && cd /src/subzy \
+ && CGO_ENABLED=0 go build -o /out/subzy .
+
 FROM debian:bookworm-slim
 
 ARG TARGETARCH=amd64
@@ -111,6 +119,16 @@ RUN curl --retry 3 --retry-delay 2 -sfL "https://github.com/1ndianl33t/Gf-Patter
 # ── gf-slice: wrapper phân loại URL bằng engine gf (worker gọi như 1 tool) ──
 COPY gf-slice /usr/local/bin/gf-slice
 RUN chmod 755 /usr/local/bin/gf-slice
+
+# ── subzy (ticket #14): subdomain takeover fingerprint — build từ source
+# (stage subzy-builder, pin tag); lần chạy đầu tự tải fingerprints.json của
+# can-i-take-over-xyz vào ~/.subzy (container có mạng)
+COPY --from=subzy-builder /out/subzy /usr/local/bin/subzy
+
+# ── subzy-run: wrapper chuẩn hoá I/O cho worker (ticket #14) — stdin danh sách
+# host → stdout JSON (kết quả --output của subzy, chỉ entry vulnerable) ──
+COPY subzy-run /usr/local/bin/subzy-run
+RUN chmod 755 /usr/local/bin/subzy-run
 
 # ── nuclei (ticket #10): detection engine — checksums file dùng dấu gạch ngang ──
 RUN curl --retry 3 --retry-delay 2 -sfL "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_${TARGETARCH}.zip" -o "/tmp/nuclei_${NUCLEI_VERSION}_linux_${TARGETARCH}.zip" \

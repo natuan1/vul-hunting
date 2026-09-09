@@ -138,6 +138,7 @@ async def test_run_in_sandbox_over_mcp_http(monkeypatch):
                     "run_in_sandbox",
                     "verify_open_redirect",
                     "verify_oob_ssrf",
+                    "verify_subdomain_takeover",
                 }
 
                 result = await session.call_tool(

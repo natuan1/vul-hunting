@@ -19,9 +19,10 @@ type Counts = {
   verifying: number;
   verified: number;
   rejected: number;
+  needs_manual: number;
 };
 
-const STATUSES = ["new", "verifying", "verified", "rejected"] as const;
+const STATUSES = ["new", "verifying", "verified", "rejected", "needs_manual"] as const;
 
 export default function FindingsPage() {
   const [items, setItems] = useState<Candidate[]>([]);
@@ -114,6 +115,9 @@ export default function FindingsPage() {
           <span className="badge">{counts.verifying} đang xác minh</span>
           <span className="badge ok">{counts.verified} đã xác minh</span>
           <span className="badge down">{counts.rejected} loại bỏ</span>
+          {counts.needs_manual > 0 && (
+            <span className="badge">{counts.needs_manual} cần xác minh tay</span>
+          )}
         </p>
       )}
 

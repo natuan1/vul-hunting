@@ -61,6 +61,7 @@ export function candidateStatusBadgeClass(status: string): string {
   if (status === "verified") return "badge ok";
   if (status === "rejected") return "badge down";
   if (status === "verifying") return "badge";
+  if (status === "needs_manual") return "badge"; // #14: chờ xác minh tay
   return "badge info"; // new
 }
 
@@ -68,6 +69,7 @@ export function candidateStatusLabel(status: string): string {
   if (status === "verifying") return "đang xác minh";
   if (status === "verified") return "đã xác minh";
   if (status === "rejected") return "loại bỏ";
+  if (status === "needs_manual") return "cần xác minh tay";
   return "mới";
 }
 

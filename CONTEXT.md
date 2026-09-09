@@ -104,6 +104,25 @@ dụng chéo; có TTL (hết hạn → deregister sạch sẽ), persist trong DB
 worker restart.
 _Avoid_: collaborator session, interactsh session
 
+**Subdomain Takeover**:
+Lớp lỗ hổng phát hiện từ CNAME treo (dnsx ở Recon 1) — subdomain trỏ tới service bỏ
+hoang claim được (GitHub Pages, S3, Heroku…). Verify PHẢI chứng minh kiểm soát: PoC
+page chứa username định danh được phục vụ qua subdomain; fingerprint match thiếu PoC
+hoạt động bị platform đóng N/A.
+_Avoid_: cname hijack, dangling dns
+
+**PoC Page**:
+Trang tĩnh do worker soạn — chứa username định danh của user + token one-shot, deploy
+lên hosting khả dụng (TAKEOVER_HOSTING: GitHub Pages/S3) để chứng minh kiểm soát
+subdomain; là bằng chứng bắt buộc của Finding takeover.
+_Avoid_: proof page, canary page
+
+**Needs Manual**:
+Trạng thái lifecycle của Candidate (cùng `new/verifying/verified/rejected`) — vòng
+verify dừng chờ người dùng xác minh tay (vd takeover match fingerprint nhưng chưa cấu
+hình hosting deploy PoC), kèm hướng dẫn trong evidence; không phải verdict.
+_Avoid_: pending, skipped, unverified
+
 ### AI
 
 **Hermes Agent**:

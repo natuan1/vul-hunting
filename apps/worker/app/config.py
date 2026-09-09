@@ -85,6 +85,22 @@ class Settings:
     oob_verify_wait_s: float = float(os.environ.get("OOB_VERIFY_WAIT_S", "60"))
     oob_verify_poll_s: float = float(os.environ.get("OOB_VERIFY_POLL_S", "5"))
 
+    # ── subdomain takeover (ticket #14) ──
+    # hosting chứng minh kiểm soát cho PoC page: '' (không — verify dừng ở
+    # "fingerprint match, cần xác minh tay") | 'github-pages' | 's3'
+    takeover_hosting: str = os.environ.get("TAKEOVER_HOSTING", "")
+    # GitHub Pages: token + account PHẢI trùng nhãn đầu của CNAME (*.github.io)
+    github_token: str = os.environ.get("GITHUB_TOKEN", "")
+    github_username: str = os.environ.get("GITHUB_USERNAME", "")
+    # S3: bucket claim tạo qua PutObject SigV4 (region mặc định us-east-1)
+    aws_access_key_id: str = os.environ.get("AWS_ACCESS_KEY_ID", "")
+    aws_secret_access_key: str = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+    aws_region: str = os.environ.get("AWS_REGION", "us-east-1")
+    # cửa sổ chờ PoC page được phục vụ qua subdomain sau deploy (propagation)
+    # + nhịp confirm probe từng lượt
+    takeover_verify_wait_s: float = float(os.environ.get("TAKEOVER_VERIFY_WAIT_S", "120"))
+    takeover_verify_poll_s: float = float(os.environ.get("TAKEOVER_VERIFY_POLL_S", "10"))
+
     # ── guardrails (ticket #19): phân loại lỗi TRƯỚC, phản ứng SAU ──
     # cap Tool Execution đồng thời (chống WAF ban) — cũng là số consumer queue
     # song song (mỗi consumer 1 Run; cap bên trong vẫn giữ nếu consumer nhiều hơn)

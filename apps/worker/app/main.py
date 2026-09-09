@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import audit, detect, guardrails, hermes_client, jobqueue, oob, recon, runner, runs, sandbox, sandbox_mcp, summary, sync, verify
+from . import audit, detect, guardrails, hermes_client, jobqueue, oob, recon, runner, runs, sandbox, sandbox_mcp, summary, sync, takeover, verify
 from .config import settings
 from .db import run_migrations
 from .egress import EgressProxy
@@ -577,6 +577,33 @@ async def get_candidate_oob_evidence(candidate_id: int) -> dict:
     if evidence is None:
         raise HTTPException(status_code=404, detail="oob evidence không tồn tại")
     return evidence
+
+
+@app.post("/candidates/{candidate_id}/verify-takeover")
+async def verify_candidate_takeover(candidate_id: int) -> dict:
+    """Chạy trọn vòng xác minh subdomain takeover (ticket #14): fingerprint
+    probe qua sandbox → soạn PoC page chứa username định danh + token → deploy
+    qua hosting khả dụng (TAKEOVER_HOSTING; chưa cấu hình → needs_manual kèm
+    hướng dẫn) → confirm probe: PoC được phục vụ QUA SUBDOMAIN → verified.
+    Fingerprint match nhưng không kiểm soát được → rejected (report thiếu PoC
+    hoạt động bị đóng N/A). Endpoint chỉ dành cho Candidate class 'takeover'."""
+    assert pool is not None
+    candidate = await detect.get_candidate(pool, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="candidate không tồn tại")
+    if candidate["class"] != "takeover":
+        raise HTTPException(
+            status_code=422,
+            detail=f"candidate thuộc class '{candidate['class']}' — vòng verify này dành cho class 'takeover'",
+        )
+    try:
+        result = await takeover.run_takeover_verification(pool, candidate)
+    except verify.ProbeBlocked as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    updated = await detect.get_candidate(pool, candidate_id)
+    return {"candidate": updated, "verify": result}
 
 
 @app.get("/runs/{run_id}/logs")

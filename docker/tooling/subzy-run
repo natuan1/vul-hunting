@@ -1,0 +1,28 @@
+#!/bin/bash
+# subzy-run (ticket #14): bọc subzy cho worker — giao diện I/O ổn định.
+#
+# stdin : danh sách host/subdomain (1 host/dòng — đã qua Scope Validator)
+# stdout: JSON array kết quả `subzy run --output` (chỉ entry vulnerable nhờ
+#         --vuln; worker parse bằng parse_subzy_output — chấp nhận cả mảng
+#         JSONL lẫn dòng [ VULNERABLE ] nếu version đổi format)
+#
+# subzy in bảng tiến trình ra stdout — chuyển hết sang stderr để stdout sạch
+# JSON; subzy lỗi (mạng fingerprints...) vẫn cat phần có được: tool lỗi là
+# dữ liệu recon, không làm chết chuỗi.
+set -u
+
+command -v subzy >/dev/null 2>&1 || { echo "subzy không có trong image" >&2; exit 1; }
+
+in=$(mktemp)
+out=$(mktemp)
+trap 'rm -f "$in" "$out"' EXIT
+cat > "$in"
+
+subzy run --targets "$in" --hide_fails --vuln --output "$out" --timeout 10 >&2 || true
+# Go json.Encode của slice nil in "null" — chuẩn hoá về [] cho parser worker
+if [ "$(tr -d '[:space:]' < "$out")" = "null" ]; then
+    echo "[]"
+else
+    cat "$out"
+fi
+exit 0

@@ -73,6 +73,26 @@ type OobVerifyResult = {
   evidence_path: string | null;
 };
 
+type TakeoverVerifyResult = {
+  verdict: string;
+  score: number;
+  threshold: number;
+  reason: string;
+  signals: string[];
+  patterns: string[];
+  cname: string | null;
+  service: string | null;
+  claim_host: string | null;
+  poc_url: string | null;
+  token: string | null;
+  username: string;
+  deploy: { provider: string; url: string } | null;
+  guidance: string | null;
+  evidence_path: string | null;
+  baseline_session_id: number | null;
+  verify_session_id: number | null;
+};
+
 const TRANSITIONS = ["verifying", "verified", "rejected"] as const;
 const OOB_POLL_MS = 5000;
 
@@ -87,6 +107,8 @@ export default function FindingDetailPage() {
   const [oobEvidence, setOobEvidence] = useState<Evidence | null>(null);
   const [oobVerifying, setOobVerifying] = useState(false);
   const [oobResult, setOobResult] = useState<OobVerifyResult | null>(null);
+  const [takeoverResult, setTakeoverResult] = useState<TakeoverVerifyResult | null>(null);
+  const [takeoverVerifying, setTakeoverVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -168,6 +190,29 @@ export default function FindingDetailPage() {
       setOobVerifying(false);
     }
   }, [id, loadOob]);
+
+  const runTakeoverVerify = useCallback(async () => {
+    setTakeoverVerifying(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/findings/${id}/verify-takeover`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.detail ?? `HTTP ${res.status}`);
+      }
+      setTakeoverResult(body.verify as TakeoverVerifyResult);
+      setCandidate((body.candidate ?? null) as Candidate | null);
+      loadVerifyEvidence().catch(() => {});
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTakeoverVerifying(false);
+    }
+  }, [id, loadVerifyEvidence]);
 
   const transition = useCallback(
     async (status: string) => {
@@ -430,6 +475,83 @@ export default function FindingDetailPage() {
         </>
       )}
 
+      {candidate.class === "takeover" && (
+        <>
+          <h2 className="section-title">Xác minh subdomain takeover (PoC chứng minh kiểm soát)</h2>
+          <p className="meta">
+            Fingerprint match chưa đủ — policy của nhiều Program yêu cầu chứng minh
+            KIỂM SOÁT: PoC page chứa username của bạn được deploy lên service bỏ hoang
+            rồi xác nhận được phục vụ <strong>qua subdomain</strong>. Report takeover
+            thiếu PoC hoạt động sẽ bị đóng N/A và ảnh hưởng reput.
+          </p>
+          <div className="btnrow">
+            <button className="btn" disabled={takeoverVerifying} onClick={runTakeoverVerify}>
+              {takeoverVerifying
+                ? "Đang xác minh — probe + deploy + confirm…"
+                : "▶ Chạy vòng xác minh takeover"}
+            </button>
+          </div>
+          {takeoverVerifying && (
+            <p className="meta">
+              Fingerprint probe chạy trong sandbox; nếu có hosting cấu hình
+              (TAKEOVER_HOSTING) worker sẽ deploy PoC page rồi confirm lại qua
+              subdomain (propagation có thể mất tới vài phút).
+            </p>
+          )}
+          {takeoverResult && (
+            <div>
+              <p className="badges">
+                <span
+                  className={
+                    takeoverResult.verdict === "verified"
+                      ? "badge ok"
+                      : takeoverResult.verdict === "needs_manual"
+                        ? "badge"
+                        : "badge down"
+                  }
+                >
+                  {takeoverResult.verdict === "verified"
+                    ? "Finding — kiểm soát được chứng minh"
+                    : takeoverResult.verdict === "needs_manual"
+                      ? "cần xác minh tay"
+                      : "false positive"}{" "}
+                  · score {takeoverResult.score.toFixed(2)} / ngưỡng{" "}
+                  {takeoverResult.threshold.toFixed(2)}
+                </span>
+                {takeoverResult.service && (
+                  <span className="badge info">service: {takeoverResult.service}</span>
+                )}
+                {takeoverResult.patterns.map((p) => (
+                  <span key={p} className="badge info">pattern: {p}</span>
+                ))}
+              </p>
+              <p className="meta">
+                {takeoverResult.cname && (
+                  <>
+                    CNAME: <code>{takeoverResult.cname}</code> ·{" "}
+                  </>
+                )}
+                {takeoverResult.poc_url && (
+                  <>
+                    PoC: <code>{takeoverResult.poc_url}</code> ·{" "}
+                  </>
+                )}
+                {takeoverResult.token && (
+                  <>
+                    token: <code>{takeoverResult.token}</code> ·{" "}
+                  </>
+                )}
+                PoC page chứa username <code>{takeoverResult.username}</code>
+              </p>
+              <p className="meta">{takeoverResult.reason}</p>
+              {takeoverResult.guidance && (
+                <p className="alert">Hướng dẫn: {takeoverResult.guidance}</p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
       <h2 className="section-title">Chuyển trạng thái</h2>
       <div className="btnrow">
         {TRANSITIONS.filter((s) => s !== candidate.status).map((s) => (
@@ -467,7 +589,11 @@ export default function FindingDetailPage() {
 
       {candidate.verify_evidence_path && (
         <>
-          <h2 className="section-title">Verify evidence (baseline + PoC + diff)</h2>
+          <h2 className="section-title">
+            {candidate.class === "takeover"
+              ? "Verify evidence (fingerprint probe + PoC page + deploy + confirm)"
+              : "Verify evidence (baseline + PoC + diff)"}
+          </h2>
           {verifyEvidence ? (
             <>
               <p className="meta">

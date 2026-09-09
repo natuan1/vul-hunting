@@ -25,7 +25,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import detect, oob, sandbox, verify
+from . import detect, oob, sandbox, takeover, verify
 from .config import settings
 
 log = logging.getLogger("sandbox_mcp")
@@ -136,6 +136,36 @@ async def _verify_oob(candidate_id: int) -> dict[str, Any]:
     }
 
 
+async def _verify_takeover(candidate_id: int) -> dict[str, Any]:
+    """Phần thực thi của tool verify takeover (tách khỏi decorator để test monkeypatch)."""
+    if _pool is None:
+        raise RuntimeError("worker chưa sẵn sàng (pool chưa bind)")
+    candidate = await detect.get_candidate(_pool, candidate_id)
+    if candidate is None:
+        return {
+            "status": "error",
+            "reason": f"Candidate #{candidate_id} không tồn tại",
+        }
+    if candidate["class"] != "takeover":
+        return {
+            "status": "error",
+            "reason": (
+                f"Candidate #{candidate_id} thuộc class '{candidate['class']}' — "
+                "tool này chỉ dành cho class 'takeover' (subdomain takeover)"
+            ),
+        }
+    result = await takeover.run_takeover_verification(_pool, candidate)
+    return {
+        **result,
+        "note": (
+            "evidence takeover (fingerprint probe + PoC page + deploy + confirm): "
+            f"GET /candidates/{candidate_id}/verify-evidence · PoC page chứa "
+            f"username '{result.get('username')}' + token one-shot — Finding CHỈ khi "
+            "PoC được phục vụ qua subdomain; report thiếu PoC hoạt động bị đóng N/A"
+        ),
+    }
+
+
 def build_mcp() -> FastMCP:
     """Tạo FastMCP server (mỗi instance chỉ chạy lifespan 1 lần — production
     dùng singleton bên dưới, test tạo instance riêng khi cần)."""
@@ -225,6 +255,33 @@ def build_mcp() -> FastMCP:
         nếu candidate không tồn tại/sai class.
         """
         return await _verify_oob(candidate_id)
+
+    @server.tool()
+    async def verify_subdomain_takeover(candidate_id: int) -> dict[str, Any]:
+        """Xác minh agentic 1 Candidate class 'takeover' (subdomain takeover,
+        ticket #14) — đi trọn vòng với tiêu chí "PHẢI chứng minh kiểm soát"
+        (policy của nhiều Program, vd Goldman Sachs):
+        1. Fingerprint probe trong sandbox: service còn bỏ hoang theo CNAME
+           (GitHub Pages, S3, Heroku…)? Mất fingerprint → rejected.
+        2. Soạn PoC page chứa USERNAME ĐỊNH DANH của user + token one-shot;
+           deploy qua hosting khả dụng (TAKEOVER_HOSTING: github-pages/s3;
+           chưa cấu hình → needs_manual kèm hướng dẫn xác minh tay).
+        3. Confirm probe trong sandbox: PoC page được PHỤC VỤ QUA SUBDOMAIN →
+           kiểm soát được chứng minh → `verified` (Finding). Fingerprint match
+           nhưng không deploy/confirm được → `rejected` (claim_failed /
+           no_control) — report takeover thiếu PoC hoạt động sẽ bị đóng N/A và
+           ảnh hưởng reput, KHÔNG BAO GIỜ report khi chưa có PoC hoạt động.
+
+        Args:
+            candidate_id: id của Candidate class 'takeover' cần xác minh.
+
+        Returns JSON: candidate_id, verdict (verified|rejected|needs_manual),
+        score, threshold, reason, signals, patterns, cname, service, claim_host,
+        poc_url, token, username, deploy, guidance, evidence_path,
+        baseline_session_id, verify_session_id. Status 'error' nếu candidate
+        không tồn tại/sai class.
+        """
+        return await _verify_takeover(candidate_id)
 
     return server
 

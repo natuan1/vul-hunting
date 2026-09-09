@@ -513,22 +513,28 @@ def analyze_ssti(
 # ── Missing security headers (informational) ──
 
 
-def analyze_headers(poc: ProbeProfile, threshold: float | None = None) -> HTTPAnalysis:
+def analyze_headers(poc: ProbeProfile | None, threshold: float | None = None) -> HTTPAnalysis:
     """Missing security headers: CHỈ THÔNG TIN — luôn verdict 'informational',
     score 0.0: KHÔNG bao giờ thành Finding/report (đề bài #15: chỉ hiển thị).
-    Evidence ghi danh sách headers thiếu để người dùng tự cân nhắc."""
-    present_map = {k.lower(): v for k, v in (poc.headers or {}).items()}
-    missing = [h for h in SECURITY_HEADERS if h not in present_map]
-    present = [h for h in SECURITY_HEADERS if h in present_map]
+    Evidence ghi danh sách headers thiếu để người dùng tự cân nhắc. Probe không
+    đọc được (poc None) → patterns probe_error, vẫn informational."""
+    present_map = dict(poc.headers or {}) if poc is not None else {}
+    unreadable = poc is None or bool(poc.error)
+    if unreadable:
+        # probe không đọc được — KHÔNG kết luận thiếu/có header nào
+        missing, present = [], []
+    else:
+        missing = [h for h in SECURITY_HEADERS if h not in present_map]
+        present = [h for h in SECURITY_HEADERS if h in present_map]
     patterns = [f"missing:{h}" for h in missing]
-    if poc.error:
+    if unreadable:
         patterns = ["probe_error"] + patterns
-    detail = {"missing": missing, "present": present, "status": poc.status}
+    detail = {"missing": missing, "present": present, "status": poc.status if poc else 0}
     return HTTPAnalysis(
         patterns=patterns, signals=[], score=0.0, verdict="informational",
         reason=(f"Thiếu {len(missing)}/{len(SECURITY_HEADERS)} security headers — chỉ "
                 "hiển thị (informational), KHÔNG tự tạo report cho class này"),
-        diff={"status": poc.status, "headers": present_map},
+        diff={"status": poc.status if poc else 0, "headers": present_map},
         detail=detail,
     )
 
@@ -611,7 +617,14 @@ def _cors_requests(candidate: dict, payload: str) -> tuple[dict, dict]:
 
 def _dirlist_requests(candidate: dict, payload: str) -> tuple[dict, dict]:
     url = candidate["target"]
-    baseline_url = url + ("" if url.endswith("/") else "/") + ".vulhunt-baseline"
+    # baseline: path con không tồn tại CÙNG THƯ MỤC — nối vào path, bỏ query
+    parts = urlsplit(url)
+    base_path = parts.path or "/"
+    baseline_url = (
+        f"{parts.scheme}://{parts.netloc}"
+        + (base_path if base_path.endswith("/") else base_path + "/")
+        + ".vulhunt-baseline"
+    )
     return (
         {"url": baseline_url, "method": "GET", "headers": {}, "body": None},
         {"url": url, "method": "GET", "headers": {}, "body": None},
@@ -710,16 +723,17 @@ def _evidence_record(
     baseline_session_id: int | None,
     poc: ProbeProfile | None,
     poc_session_id: int | None,
-    unparsed: ProbeProfile | None = None,
+    unparsed_stdout: str | None = None,
 ) -> dict:
     """Nội dung file evidence của vòng verify batch A — baseline + PoC + phân
-    tích + detail tuỳ lớp (headers thiếu, marker trúng…)."""
+    tích + detail tuỳ lớp (headers thiếu, marker trúng…). `unparsed_stdout` là
+    stdout thô của phía KHÔNG parse được probe (nếu có)."""
 
     def _profile_or_parse_error(p: ProbeProfile | None) -> dict:
         if p is not None:
             return p.to_dict()
-        if unparsed is not None:
-            return {"parse_error": True, "stdout_head": (unparsed.body or "")[:2000]}
+        if unparsed_stdout is not None:
+            return {"parse_error": True, "stdout_head": unparsed_stdout[:2000]}
         return {"skipped": True}
 
     return {
@@ -863,24 +877,28 @@ async def run_http_verification(
 
     baseline = parse_probe(base_res.get("stdout") or "")
     poc = parse_probe(poc_res.get("stdout") or "")
+    # stdout thô của phía KHÔNG parse được — ghi vào evidence thay vì im lặng
+    unparsed_stdout: str | None = None
+    if baseline is None:
+        unparsed_stdout = base_res.get("stdout") or ""
+    elif poc is None:
+        unparsed_stdout = poc_res.get("stdout") or ""
+
     if cls == "headers":
         analysis = analyze_headers(poc, threshold)
-        diff_src = poc if poc is None else None
     elif baseline is None or poc is None:
         analysis = HTTPAnalysis(
             patterns=["probe_error"], score=0.0, verdict="rejected",
             reason="Không đọc được profile response từ stdout sandbox (thiếu marker/JSON đứt)",
         )
-        diff_src = (baseline or poc)
     else:
         analysis = spec.analyze(baseline, poc, payload, threshold)
-        diff_src = None
 
     evidence = write_verify_evidence(run_id, candidate_id, _evidence_record(
         candidate, cls, payload, threshold, analysis,
         baseline, base_res.get("session_id"),
         poc, poc_res.get("session_id"),
-        unparsed=diff_src,
+        unparsed_stdout=unparsed_stdout,
     ))
     base_sid = base_res.get("session_id")
     poc_sid = poc_res.get("session_id")

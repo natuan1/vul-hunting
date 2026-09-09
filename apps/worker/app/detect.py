@@ -48,16 +48,24 @@ _CLASS_VOCAB = (
 )
 
 # tag template → class cho batch A (#15, 7 lớp HTTP-only): tag thực tế trong
-# nuclei templates không trùng tên class (vd "listing", "config") hoặc nhiều
-# tag cùng chỉ 1 lớp (info disclosure/debug endpoints = exposure + debug +
-# disclosure) — map về đúng 7 class của batch, áp dụng TRƯỚC ∩ vocab
+# nuclei templates không trùng tên class (vd "listing") hoặc nhiều tag cùng chỉ
+# 1 lớp (info disclosure/debug endpoints = exposure + debug + disclosure) —
+# map về đúng 7 class của batch, áp dụng TRƯỚC ∩ vocab. CHỈ gồm tag an toàn:
+# "config" KHÔNG có ở đây — tag đó dùng chung bởi template lộ file config
+# (finding thật), không riêng missing security headers.
 _TAG_CLASS_MAP = {
     "listing": "dirlist",
-    "config": "headers",
     "exposure": "disclosure",
     "debug": "disclosure",
     "disclosure": "disclosure",
 }
+
+# template-id → class cho batch A: chính xác hơn tag (template missing
+# security headers chỉ có tag 'config'/misconfig dùng chung) — chỉ template
+# này mới là class 'headers' (informational)
+_TEMPLATE_ID_CLASS_MAP = (
+    (re.compile(r"security[-_]headers?"), "headers"),
+)
 
 # class chỉ informational (không bao giờ thành Finding/report — chỉ hiển thị);
 # severity mặc định bị ép trần (ticket #15)
@@ -76,12 +84,17 @@ def parse_nuclei_jsonl(stdout: str) -> list[dict]:
     return jsonl_lines(stdout)
 
 
-def map_class(tags: list) -> str:
-    """Class của Candidate: alias tag batch A (#15) trước, rồi tag của template
-    khớp vocab (ưu tiên thứ tự vocab); không khớp → 'misc'."""
+def map_class(tags: list, template_id: str | None = None) -> str:
+    """Class của Candidate: alias tag batch A (#15) trước, rồi template-id
+    (chính xác hơn — vd chỉ template security-headers là class 'headers'), rồi
+    tag khớp vocab (ưu tiên thứ tự vocab); không khớp → 'misc'."""
     tagset = {str(t).lower() for t in (tags or [])}
     for tag, cls in _TAG_CLASS_MAP.items():
         if tag in tagset:
+            return cls
+    tid = str(template_id or "").lower()
+    for pattern, cls in _TEMPLATE_ID_CLASS_MAP:
+        if pattern.search(tid):
             return cls
     for cls in _CLASS_VOCAB:
         if cls in tagset:
@@ -313,7 +326,10 @@ async def run_detection_phase(
         if not ok:
             continue
         target = ok[0]
-        cls = map_class((finding.get("info") or {}).get("tags"))
+        cls = map_class(
+            (finding.get("info") or {}).get("tags"),
+            template_id=str(finding.get("template-id") or ""),
+        )
         key = (target, cls, param_key(target))
         if key in seen_keys:
             continue

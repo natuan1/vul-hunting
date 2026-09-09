@@ -96,11 +96,22 @@ def test_map_class_batch_a_bảy_lớp_ra_đúng_class():
     assert map_class(["graphql", "misconfig"]) == "graphql"
     assert map_class(["crlf"]) == "crlf"
     assert map_class(["ssti"]) == "ssti"
-    assert map_class(["config", "misconfig"]) == "headers"
-    # info disclosure/debug endpoints — gộp exposure/debug/disclosure về 1 lớp
     assert map_class(["exposure"]) == "disclosure"
     assert map_class(["debug"]) == "disclosure"
     assert map_class(["disclosure"]) == "disclosure"
+
+
+def test_map_class_headers_chỉ_theo_template_id_không_theo_tag_config():
+    """#15: tag 'config' dùng chung bởi template lộ file config (finding thật)
+    — chỉ template security-headers mới là class 'headers' informational."""
+    assert map_class(["misconfig", "config"]) == "misconfig"  # không phải headers
+    assert map_class(
+        ["misconfig", "config"], template_id="missing-security-header"
+    ) == "headers"
+    assert map_class(
+        [], template_id="http/misconfiguration/security-headers"
+    ) == "headers"
+    assert map_class(["config"], template_id="exposed-config-file") != "headers"
 
 
 def test_map_class_batch_a_không_đổi_hành_vi_class_cũ():
@@ -297,6 +308,8 @@ async def test_pipeline_class_headers_ép_severity_không_vượt_low():
 # ── pipeline âm tính ──
 
 
+@pytest.mark.asyncio
+async def test_pipeline_âm_tính_matched_at_ngoài_scope_không_thành_candidate():
     evil = {
         **FINDING,
         "host": "https://evil.com",

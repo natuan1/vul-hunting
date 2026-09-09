@@ -317,6 +317,44 @@ async def test_target_bị_chặn_trả_lifecycle_về_và_raise():
 
 
 @pytest.mark.asyncio
+async def test_headers_probe_hỏng_vẫn_informational_có_evidence_parse_error():
+    """PoC stdout không parse được → KHÔNG crash: vẫn informational, evidence
+    ghi parse_error kèm stdout_head (evidence chuẩn như 6 lớp còn lại)."""
+    probe = FakeProbe(["stdout rác không marker", "cũng rác"])
+    pool = FakePool()
+    summary = await run_http_verification(
+        pool, {**CANDIDATE, "class": "headers", "id": 21}, probe=probe
+    )
+    assert summary["verdict"] == "informational"
+    assert summary["patterns"][0] == "probe_error"
+    assert summary["detail"]["missing"] == []
+    info = _info_updates(pool)[-1]
+    evidence = json.loads(open(info[2], encoding="utf-8").read())
+    assert evidence["poc"]["parse_error"] is True
+    assert "stdout rác" in evidence["poc"]["stdout_head"]
+
+
+@pytest.mark.asyncio
+async def test_dirlist_baseline_nối_path_không_dính_query():
+    """Target dirlist có query string → baseline phải là path con của PATH,
+    không nối đuôi sau query."""
+    probe = FakeProbe([
+        _probe_stdout(404, body="not found"),
+        _probe_stdout(200, body="<title>Index of /backup</title>"),
+    ])
+    pool = FakePool()
+    candidate = {
+        **CANDIDATE, "class": "dirlist", "id": 22,
+        "target": "https://app.other.com/backup?x=1",
+    }
+    summary = await run_http_verification(pool, candidate, probe=probe)
+    assert summary["verdict"] == "verified"
+    baseline_script = probe.calls[0][0]
+    assert "https://app.other.com/backup/.vulhunt-baseline" in baseline_script
+    assert "backup?x=1/.vulhunt-baseline" not in baseline_script
+
+
+@pytest.mark.asyncio
 async def test_class_ngoài_batch_a_từ_chối():
     pool = FakePool()
     with pytest.raises(ValueError):

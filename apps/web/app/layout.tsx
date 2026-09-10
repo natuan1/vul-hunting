@@ -1,9 +1,28 @@
 import type { Metadata } from "next";
+import localFont from "next/font/local";
+import Sidebar from "../components/Sidebar";
 import "./globals.css";
 
+// Font self-host (latin variable woff2 trong apps/web/fonts) — build trong
+// docker không cần gọi ra mạng như next/font/google
+const sans = localFont({
+  src: "../fonts/SpaceGrotesk-latin.woff2",
+  weight: "300 700",
+  variable: "--font-sans",
+  display: "swap",
+});
+
+const mono = localFont({
+  src: "../fonts/JetBrainsMono-latin.woff2",
+  weight: "100 800",
+  variable: "--font-mono",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
-  title: "vul-hunting",
-  description: "Bug bounty hunting assistant",
+  title: "vul-hunting — bug bounty ops",
+  description:
+    "Trạm điều hành bug bounty cá nhân: thu thập Program, recon tự động, xác minh lỗ hổng bằng Hermes Agent.",
 };
 
 export default function RootLayout({
@@ -12,19 +31,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="vi">
+    <html lang="vi" className={`${sans.variable} ${mono.variable}`}>
       <body>
-        <header className="topnav">
-          <a href="/" className="brand">vul-hunting</a>
-          <nav>
-            <a href="/">Trạng thái</a>
-            <a href="/programs">Programs</a>
-            <a href="/runs">Runs</a>
-            <a href="/findings">Findings</a>
-            <a href="/audit">Audit</a>
-          </nav>
-        </header>
-        {children}
+        <div className="shell">
+          <Sidebar />
+          <div className="main">{children}</div>
+        </div>
       </body>
     </html>
   );

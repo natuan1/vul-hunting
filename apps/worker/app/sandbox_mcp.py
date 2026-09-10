@@ -283,20 +283,20 @@ def build_mcp() -> FastMCP:
         return await _verify_open_redirect(candidate_id, payload)
 
     @server.tool()
-    async def verify_oob_blind(candidate_id: int) -> dict[str, Any]:
-        """Xác minh agentic 1 Candidate blind class bằng OOB callback (ticket
-        #13 + batch C #17: ssrf, blind XSS, XXE, deserialization) — đi trọn
-        vòng: đăng ký interactsh RIÊNG cho Run (domain payload xoay vòng
-        per-Run, không tái sử dụng chéo) → payload theo class (oob_payload:
-        URL hệ thống / tag script kiểu dalfox / external entity XML / stream
-        Java URLDNS chỉ ping-back) chèn vào param của Candidate → baseline +
-        PoC chạy TRONG sandbox → chờ/poll callback từ Internet (~1 phút) →
-        callback về = server-side đã xử lý payload → `verified` kèm evidence
-        OOB (source, protocol, timestamp, raw interaction); hết cửa sổ chờ
-        không callback → `rejected`. LƯU Ý: Finding deserialization LUÔN kèm
-        cờ human review + severity trần (payload chỉ chứng minh ping-back,
-        không chứng minh impact). Payload gây cost (SMS/API tốn phí) bị
-        guardrails HALT. KHÔNG bao giờ chạy payload trực tiếp.
+    async def verify_oob(candidate_id: int) -> dict[str, Any]:
+        """Xác minh agentic 1 Candidate bằng OOB callback (ticket #13 + batch
+        C #17: ssrf, blind XSS, XXE, deserialization) — đi trọn vòng: đăng ký
+        interactsh RIÊNG cho Run (domain payload xoay vòng per-Run, không tái
+        sử dụng chéo) → payload theo class (oob_payload: URL hệ thống / tag
+        script kiểu dalfox / external entity XML / stream Java URLDNS chỉ
+        ping-back) chèn vào param của Candidate → baseline + PoC chạy TRONG
+        sandbox → chờ/poll callback từ Internet (~1 phút) → callback về =
+        server-side đã xử lý payload → `verified` kèm evidence OOB (source,
+        protocol, timestamp, raw interaction); hết cửa sổ chờ không callback
+        → `rejected`. LƯU Ý: Finding deserialization LUÔN kèm cờ human review
+        + severity trần (payload chỉ chứng minh ping-back, không chứng minh
+        impact). Payload gây cost (SMS/API tốn phí) bị guardrails HALT.
+        KHÔNG bao giờ chạy payload trực tiếp.
 
         Args:
             candidate_id: id của Candidate blind (ssrf/xss/xxe/deserialization) cần xác minh.

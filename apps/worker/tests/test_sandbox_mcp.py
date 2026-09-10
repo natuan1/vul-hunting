@@ -137,7 +137,7 @@ async def test_run_in_sandbox_over_mcp_http(monkeypatch):
                 assert {t.name for t in tools.tools} == {
                     "run_in_sandbox",
                     "verify_open_redirect",
-                    "verify_oob_blind",
+                    "verify_oob",
                     "verify_subdomain_takeover",
                     "verify_http_class",
                 }

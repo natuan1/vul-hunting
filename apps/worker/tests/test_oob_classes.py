@@ -104,7 +104,7 @@ def test_oob_payload_dispatch_theo_class():
         oob_payload("redirect", TOKEN, DOMAIN)
 
 
-# ── guard payload gây cost (Intigriti CoC: không SMS/API tốn phí) ──
+# ── guardrails chặn payload gây cost (Intigriti CoC: không SMS/API tốn phí) ──
 
 
 def test_find_costly_payload_pattern_phát_hiện_sms_và_api_tốn_phí():

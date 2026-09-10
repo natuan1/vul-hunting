@@ -166,6 +166,10 @@ def extract_bundle(detection: dict | None, verify: dict | None, oob: dict | None
         bundle["signals"] = bundle["signals"] or [str(s) for s in (analysis.get("signals") or [])]
         if bundle["score"] is None:
             bundle["score"] = analysis.get("score")
+        # cờ human review (batch C #17) đi theo Finding vào report — deserialization
+        if oob.get("human_review_required"):
+            bundle["human_review_required"] = True
+            bundle["human_review_note"] = str(oob.get("human_review_note") or "")
 
     # payload OOB là PoC URL (blind) khi chưa có PoC HTTP nào
     if not bundle["poc_url"] and bundle["payload"].startswith("http"):
@@ -247,11 +251,31 @@ _CLASS_META = {
     ),
     "xss": (
         "Cross-Site Scripting (XSS)",
-        "User-controlled input is reflected into the page without proper "
-        "output encoding.",
+        "User-controlled input is incorporated into the application without "
+        "proper output encoding; the out-of-band callback confirms the "
+        "submitted payload is processed (blind XSS).",
         "An attacker can execute arbitrary JavaScript in the context of the "
-        "victim's session, hijacking accounts or performing actions on their "
-        "behalf.",
+        "victim's session — for blind XSS typically an administrator — "
+        "hijacking accounts or performing actions on their behalf.",
+    ),
+    "xxe": (
+        "XML External Entity (XXE)",
+        "The server parses user-controlled XML with external entity "
+        "resolution enabled; an out-of-band callback confirms the external "
+        "entity is resolved.",
+        "An attacker can read local files, reach internal services through "
+        "entity URLs, or exfiltrate data out-of-band via crafted XML "
+        "documents.",
+    ),
+    "deserialization": (
+        "Insecure Deserialization",
+        "The application deserializes user-controlled data; a benign "
+        "DNS ping-back payload (URLDNS) confirms deserialization occurs — "
+        "no execution gadget was submitted.",
+        "Deserialization of untrusted input commonly enables remote code "
+        "execution, but this report only demonstrates a benign ping-back; "
+        "impact must be confirmed by manual analysis before claiming higher "
+        "severity.",
     ),
     "sqli": (
         "SQL Injection",
@@ -539,6 +563,13 @@ def build_draft(candidate: dict, bundle: dict, platform: str) -> dict:
         "impact": impact,
         "evidence": _evidence_text(candidate, bundle),
     }
+    if bundle.get("human_review_required"):
+        # deserialization (batch C #17): Finding luôn kèm cảnh báo human review
+        sections["impact"] += (
+            " **Note:** the verification payload only demonstrates a benign "
+            "ping-back — impact must be confirmed by manual review before "
+            "reporting or claiming higher severity."
+        )
     return {
         "platform": platform,
         "sections": sections,

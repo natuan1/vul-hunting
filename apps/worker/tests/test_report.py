@@ -143,6 +143,31 @@ def test_extract_bundle_từ_oob_evidence():
     assert b["callbacks"][0]["protocol"] == "http"
 
 
+def test_extract_bundle_oob_deser_cờ_human_review_đi_theo_finding():
+    """AC #17: deserialization — cờ human review trong evidence OOB phải đi
+    trọn vào bundle (nguồn của build_draft), không rơi lại ở evidence."""
+    oob = {
+        "schema": "vulhunt.oob-evidence/1",
+        "payload": "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA==",
+        "registration": {"domain": "e.example.com"},
+        "callbacks": [{"protocol": "dns", "source": "1.2.3.4"}],
+        "human_review_required": True,
+        "human_review_note": "Payload chỉ chứng minh deserialize — CẦN HUMAN REVIEW.",
+        "analysis": {"signals": ["oob_callback"], "verdict": "verified", "score": 0.95},
+    }
+    b = extract_bundle(None, None, oob)
+    assert b["human_review_required"] is True
+    assert "human review" in b["human_review_note"].lower()
+
+    draft = build_draft(
+        _candidate_with(**{"class": "deserialization"}, severity="medium"),
+        b,
+        "hackerone",
+    )
+    assert "ping-back" in draft["sections"]["impact"]
+    assert "manual review" in draft["sections"]["impact"]
+
+
 def test_extract_bundle_không_evidence_nào_vẫn_trả_bundle_rỗng():
     b = extract_bundle(None, None, None)
     assert b["poc_url"] is None

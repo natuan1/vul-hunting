@@ -68,7 +68,6 @@ OOB_VERIFY_CLASSES = ("ssrf", "xss", "xxe", "deserialization")
 # class deserialization: payload CHỈ ping-back an toàn (không gadget thực thi)
 # — Finding luôn kèm cờ "human review required" + severity trần thận trọng
 # (chứng minh được deserialization xảy ra, KHÔNG chứng minh được impact)
-DESERIALIZATION_HUMAN_REVIEW = True
 DESERIALIZATION_SEVERITY_CAP = "medium"
 
 # payload gây cost bị cấm theo Code of Conduct Intigriti (SMS/API tốn phí,
@@ -264,14 +263,20 @@ _OOB_PAYLOAD_BUILDERS = {
 }
 
 
-def oob_payload(cls: str, token: str, domain: str) -> str:
-    """Payload OOB của 1 class — class không hỗ trợ → ValueError."""
-    builder = _OOB_PAYLOAD_BUILDERS.get(str(cls or "").strip())
-    if builder is None:
+def _require_oob_class(cls: str) -> str:
+    """Class thuộc 4 lớp blind OOB — không thì ValueError (1 nguồn sự thật,
+    dùng chung bởi oob_payload và vòng run_oob_verification)."""
+    cls = str(cls or "").strip()
+    if cls not in OOB_VERIFY_CLASSES:
         raise ValueError(
             f"class '{cls}' không thuộc lớp blind OOB: {', '.join(OOB_VERIFY_CLASSES)}"
         )
-    return builder(token, domain)
+    return cls
+
+
+def oob_payload(cls: str, token: str, domain: str) -> str:
+    """Payload OOB của 1 class — class không hỗ trợ → ValueError."""
+    return _OOB_PAYLOAD_BUILDERS[_require_oob_class(cls)](token, domain)
 
 
 def find_costly_payload_pattern(payload: str) -> str | None:
@@ -869,11 +874,7 @@ async def run_oob_verification(
     """
     candidate_id = candidate["id"]
     run_id = candidate["run_id"]
-    cls = str(candidate.get("class") or "").strip()
-    if cls not in OOB_VERIFY_CLASSES:
-        raise ValueError(
-            f"class '{cls}' không thuộc lớp blind OOB: {', '.join(OOB_VERIFY_CLASSES)}"
-        )
+    cls = _require_oob_class(candidate.get("class"))
     human_review = cls == "deserialization"
     threshold = float(
         settings.verify_confidence_threshold if threshold is None else threshold
@@ -1061,10 +1062,18 @@ async def run_oob_verification(
         seen = {m["full_id"] for m in callbacks}
         protocols = sorted({m["protocol"] for m in callbacks})
         sources = sorted({m["source"].split(":")[0] for m in callbacks})
+        # diễn giải callback theo cơ chế từng lớp — không gán chung "fetch"
+        confirmed = {
+            "ssrf": "server-side đã fetch payload ra Internet",
+            "xss": "payload đã được xử lý và tải tài nguyên về interactsh "
+                   "(trình duyệt có session đã thực thi payload)",
+            "xxe": "server đã parse XML và resolve external entity",
+            "deserialization": "server đã deserialize input (URLDNS ping-back)",
+        }[cls]
         reason = (
             f"Target phát OOB callback về interactsh: {len(callbacks)} callback "
             f"({', '.join(protocols) or '—'}) từ {', '.join(sources) or '—'} — "
-            "server-side đã fetch payload blind"
+            f"{confirmed}"
         )
         if human_review:
             reason += (

@@ -540,3 +540,182 @@ async def test_verify_oob_poll_lỗi_môi_trường_trả_lifecycle_về_và_rai
         await run_oob_verification(pool, CANDIDATE, probe=probe, client=DyingClient())
     updates = [p for _, sql, p in pool.executes if "UPDATE candidates SET status = $2" in sql]
     assert updates and updates[-1][1] == "new"  # trả lifecycle về cũ, không kẹt verifying
+
+
+# ── batch C (#17): blind XSS · XXE · deserialization qua cùng vòng OOB ──
+
+from app.oob import blind_xss_payload, deserialization_payload, xxe_payload  # noqa: E402
+
+_XSS_CANDIDATE = {
+    **CANDIDATE,
+    "id": 8,
+    "class": "xss",
+    "template_id": "blind-xss-dom",
+    "title": "Blind XSS",
+}
+_XXE_CANDIDATE = {
+    **CANDIDATE,
+    "id": 9,
+    "class": "xxe",
+    "template_id": "xxe-parameter",
+    "title": "XXE (blind)",
+}
+_DESER_CANDIDATE = {
+    **CANDIDATE,
+    "id": 10,
+    "class": "deserialization",
+    "template_id": "java-deserialization-pingback",
+    "title": "Insecure Deserialization",
+    "severity": "critical",  # nuclei rating — vòng verify phải ép trần
+}
+
+
+@pytest.mark.asyncio
+async def test_verify_blind_xss_callback_về_verified_payload_script_tag(monkeypatch):
+    """AC #17: blind XSS — payload kiểu dalfox chèn qua param; callback về →
+    verified kèm evidence chứa callback detail + baseline/PoC profile."""
+    from app import oob as oob_mod
+
+    monkeypatch.setattr(oob_mod, "new_nonce", lambda: "ybndrfg8ejkmc")
+    token_id = f"{candidate_token(8, 'ybndrfg8ejkmc')}.abcdefghijklmnopqrst1234567890abc"
+    monkeypatch.setattr(
+        oob_mod, "decrypt_interactions", lambda *a, **k: [interaction(token_id)]
+    )
+    probe = FakeProbe([_probe_stdout(), _probe_stdout()])
+    pool = _verify_pool([token_id])
+    summary = await run_oob_verification(
+        pool, _XSS_CANDIDATE, probe=probe,
+        client=FakeClient(poll_responses=[(["x"], "key")]),
+    )
+
+    assert summary["verdict"] == "verified" and summary["class"] == "xss"
+    payload = blind_xss_payload("c8nybndrfg8ejkmc", "abcdefghijklmnopqrst1234567890abc.oast.pro")
+    assert summary["payload"] == payload
+    assert "<script" in summary["payload"]
+    # payload chèn qua param trong script sandbox (đã URL-encode bởi inject_param)
+    from app.verify import inject_param
+
+    assert inject_param(CANDIDATE["target"], "url", payload) in probe.calls[1][0]
+    # evidence: callbacks + human review không áp cho class này
+    verdicts = _verdict_updates(pool)
+    assert verdicts[-1][1] == "verified"
+    evidence = json.loads(open(verdicts[-1][5], encoding="utf-8").read())
+    assert evidence["class"] == "xss"
+    assert evidence["callbacks"][0]["full_id"] == token_id
+    assert not evidence.get("human_review_required", False)
+
+
+@pytest.mark.asyncio
+async def test_verify_xxe_callback_về_verified_payload_external_entity(monkeypatch):
+    from app import oob as oob_mod
+
+    monkeypatch.setattr(oob_mod, "new_nonce", lambda: "ybndrfg8ejkmc")
+    token_id = f"{candidate_token(9, 'ybndrfg8ejkmc')}.abcdefghijklmnopqrst1234567890abc"
+    monkeypatch.setattr(
+        oob_mod, "decrypt_interactions", lambda *a, **k: [interaction(token_id)]
+    )
+    probe = FakeProbe([_probe_stdout(), _probe_stdout()])
+    pool = _verify_pool([token_id])
+    summary = await run_oob_verification(
+        pool, _XXE_CANDIDATE, probe=probe,
+        client=FakeClient(poll_responses=[(["x"], "key")]),
+    )
+
+    assert summary["verdict"] == "verified" and summary["class"] == "xxe"
+    assert "<!ENTITY" in summary["payload"] and "SYSTEM" in summary["payload"]
+    verdicts = _verdict_updates(pool)
+    evidence = json.loads(open(verdicts[-1][5], encoding="utf-8").read())
+    assert evidence["class"] == "xxe"
+    assert evidence["callbacks"][0]["protocol"] == "http"
+    assert not evidence.get("human_review_required", False)
+
+
+@pytest.mark.asyncio
+async def test_verify_deserialization_verified_cờ_human_review_severity_trần(monkeypatch):
+    """AC #17: deserialization — Finding LUÔN kèm cờ human review required,
+    severity ép trần thận trọng (payload chỉ chứng minh ping-back)."""
+    from app import oob as oob_mod
+
+    monkeypatch.setattr(oob_mod, "new_nonce", lambda: "ybndrfg8ejkmc")
+    token_id = f"{candidate_token(10, 'ybndrfg8ejkmc')}.abcdefghijklmnopqrst1234567890abc"
+    monkeypatch.setattr(
+        oob_mod, "decrypt_interactions", lambda *a, **k: [interaction(token_id)]
+    )
+    probe = FakeProbe([_probe_stdout(), _probe_stdout()])
+    pool = _verify_pool([token_id])
+    summary = await run_oob_verification(
+        pool, _DESER_CANDIDATE, probe=probe,
+        client=FakeClient(poll_responses=[(["x"], "key")]),
+    )
+
+    assert summary["verdict"] == "verified"
+    assert summary["human_review_required"] is True
+    assert "human review" in summary["reason"].lower()
+    # severity trần 'medium' dù nuclei đánh critical — chỉ ping-back được chứng minh
+    verdicts = _verdict_updates(pool)
+    assert verdicts[-1][1] == "verified"
+    assert verdicts[-1][6] == "medium"  # param $7 = severity mới
+    evidence = json.loads(open(verdicts[-1][5], encoding="utf-8").read())
+    assert evidence["human_review_required"] is True
+    assert "human review" in evidence["human_review_note"].lower()
+    # payload là base64 stream URLDNS — không lệnh thực thi
+    import base64 as b64
+
+    assert b64.b64decode(summary["payload"])[:4] == b"\xac\xed\x00\x05"
+
+
+@pytest.mark.asyncio
+async def test_verify_deserialization_rejected_vẫn_giữ_flag_và_không_đổi_severity(monkeypatch):
+    from app import oob as oob_mod
+
+    monkeypatch.setattr(oob_mod, "decrypt_interactions", lambda *a, **k: [])
+    probe = FakeProbe([_probe_stdout(), _probe_stdout()])
+    pool = _verify_pool([])
+    summary = await run_oob_verification(
+        pool, _DESER_CANDIDATE, probe=probe, client=FakeClient()
+    )
+    assert summary["verdict"] == "rejected"
+    assert summary["human_review_required"] is True
+    verdicts = _verdict_updates(pool)
+    assert verdicts[-1][1] == "rejected"
+    assert verdicts[-1][6] is None  # không đổi severity khi rejected
+    evidence = json.loads(open(verdicts[-1][5], encoding="utf-8").read())
+    assert evidence["human_review_required"] is True
+
+
+@pytest.mark.asyncio
+async def test_verify_payload_gây_cost_halt_run_không_chạy_probe(monkeypatch):
+    """AC #17: không payload nào gây cost — guard bắt payload SMS/API tốn phí
+    TRƯỚC khi chạy probe: HALT Run (guardrails) + ném RunHalted, Candidate
+    không kẹt 'verifying', không request nào đi ra."""
+    from app import guardrails
+    from app import oob as oob_mod
+
+    monkeypatch.setattr(
+        oob_mod, "find_costly_payload_pattern", lambda payload: "sms:"
+    )
+    probe = FakeProbe([])
+    pool = _verify_pool([])
+    with pytest.raises(guardrails.RunHalted):
+        await run_oob_verification(pool, CANDIDATE, probe=probe, client=FakeClient())
+    assert probe.calls == []  # KHÔNG request nào đi ra
+    statuses = [
+        p for _, sql, p in pool.executes
+        if "UPDATE candidates SET status = 'verifying'" in sql
+    ]
+    assert statuses == []  # lifecycle không đổi
+    halts = [p for _, sql, p in pool.executes if "status = 'halted'" in sql]
+    assert halts  # guardrails.halt_run đã gọi
+
+
+@pytest.mark.asyncio
+async def test_verify_class_ngoài_4_lớp_oob_valueerror():
+    from app import oob as oob_mod
+
+    probe = FakeProbe([])
+    pool = _verify_pool([])
+    with pytest.raises(ValueError):
+        await run_oob_verification(
+            pool, {**CANDIDATE, "class": "redirect"}, probe=probe
+        )
+    assert probe.calls == []

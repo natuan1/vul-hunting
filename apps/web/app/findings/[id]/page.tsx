@@ -74,6 +74,7 @@ type OobVerifyResult = {
   token: string;
   domain: string | null;
   callbacks: OobCallback[];
+  human_review_required?: boolean;
   evidence_path: string | null;
 };
 
@@ -137,6 +138,14 @@ const HTTP_CLASS_LABEL: Record<string, string> = {
   ssti: "SSTI",
   headers: "Missing security headers",
   disclosure: "Info disclosure / debug",
+};
+
+// Batch C (ticket #17): 4 lớp blind xác minh bằng OOB callback
+const OOB_CLASS_LABEL: Record<string, string> = {
+  ssrf: "blind SSRF",
+  xss: "blind XSS",
+  xxe: "XXE",
+  deserialization: "insecure deserialization",
 };
 
 const TRANSITIONS = ["verifying", "verified", "rejected"] as const;
@@ -561,7 +570,8 @@ export default function FindingDetailPage() {
         </>
       )}
 
-      {(candidate.class === "ssrf" || (oob && (oob.count > 0 || oob.registration))) && (
+      {(candidate.class in OOB_CLASS_LABEL ||
+        (oob && (oob.count > 0 || oob.registration))) && (
         <>
           <h2 className="section-title">OOB qua interactsh (blind)</h2>
           <p className="meta">
@@ -569,6 +579,14 @@ export default function FindingDetailPage() {
             xoay vòng theo Run, callback từ Internet được gắn về Candidate qua token
             trong subdomain.
           </p>
+          {candidate.class === "deserialization" && (
+            <p className="badges">
+              <span className="badge warn">
+                ⚠ Human review required — payload chỉ chứng minh deserialize
+                (ping-back), KHÔNG chứng minh impact; severity đã ép trần thận trọng
+              </span>
+            </p>
+          )}
           {oob?.registration && (
             <p className="meta">
               Domain: <code>*.{oob.registration.domain}</code> · server{" "}
@@ -576,20 +594,19 @@ export default function FindingDetailPage() {
               {fmtTime(oob.registration.expires_at)}
             </p>
           )}
-          {candidate.class === "ssrf" && (
+          {candidate.class in OOB_CLASS_LABEL && (
             <div className="btnrow">
               <button className="btn" disabled={oobVerifying} onClick={runOobVerify}>
                 {oobVerifying
                   ? "Đang xác minh — chờ callback OOB…"
-                  : "▶ Chạy vòng xác minh OOB (blind SSRF)"}
+                  : `▶ Chạy vòng xác minh OOB (${OOB_CLASS_LABEL[candidate.class]})`}
               </button>
             </div>
           )}
           {oobVerifying && (
             <p className="meta">
-              Payload <code>http://&lt;token&gt;.&lt;domain&gt;</code> đã chạy qua
-              sandbox — đang chờ target fetch ra Internet (callback có thể mất
-              tới ~1 phút).
+              Payload theo class đã chạy qua sandbox — đang chờ target xử lý
+              payload ra Internet (callback có thể mất tới ~1 phút).
             </p>
           )}
           {oobResult && (
@@ -605,6 +622,9 @@ export default function FindingDetailPage() {
                   {oobResult.threshold.toFixed(2)}
                 </span>
                 <span className="badge info">{oobResult.callbacks.length} callback</span>
+                {oobResult.human_review_required && (
+                  <span className="badge warn">human review required</span>
+                )}
                 {oobResult.patterns.map((p) => (
                   <span key={p} className="badge info">pattern: {p}</span>
                 ))}

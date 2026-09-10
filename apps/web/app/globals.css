@@ -305,6 +305,11 @@ a.plink:hover .pname {
   color: #93c5fd;
 }
 
+.badge.warn {
+  background: rgba(202, 138, 4, 0.18);
+  color: #facc15;
+}
+
 code {
   background: #161b28;
   border-radius: 4px;

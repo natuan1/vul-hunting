@@ -25,7 +25,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import detect, httpverify, oob, sandbox, takeover, verify
+from . import detect, guardrails, httpverify, oob, sandbox, takeover, verify
 from .config import settings
 
 log = logging.getLogger("sandbox_mcp")
@@ -124,7 +124,16 @@ async def _verify_oob(candidate_id: int) -> dict[str, Any]:
                 f"{', '.join(oob.OOB_VERIFY_CLASSES)} (xác minh bằng callback OOB)"
             ),
         }
-    result = await oob.run_oob_verification(_pool, candidate)
+    try:
+        result = await oob.run_oob_verification(_pool, candidate)
+    except guardrails.RunHalted as exc:
+        # payload gây cost bị cấm (Intigriti CoC) — Run đã bị HALT, không có
+        # request nào đi ra; trả về như một kết quả có chủ đích cho agent
+        return {
+            "status": "error",
+            "reason": f"GUARDRAIL HALT: {exc}",
+            "human_review_required": False,
+        }
     return {
         **result,
         "note": (
@@ -132,6 +141,10 @@ async def _verify_oob(candidate_id: int) -> dict[str, Any]:
             f"GET /candidates/{candidate_id}/oob-evidence · domain payload "
             f"riêng của Run: {result.get('domain')} · ngưỡng confidence: "
             f"{result.get('threshold')}"
+        ) + (
+            " · class deserialization CHỈ chứng minh ping-back — Finding luôn "
+            "kèm cờ human review + severity trần, KHÔNG tự claim RCE"
+            if result.get("human_review_required") else ""
         ),
     }
 
@@ -270,24 +283,28 @@ def build_mcp() -> FastMCP:
         return await _verify_open_redirect(candidate_id, payload)
 
     @server.tool()
-    async def verify_oob_ssrf(candidate_id: int) -> dict[str, Any]:
-        """Xác minh agentic 1 Candidate blind class 'ssrf' bằng OOB callback
-        (ticket #13) — đi trọn vòng: đăng ký interactsh RIÊNG cho Run (domain
-        payload xoay vòng per-Run, không tái sử dụng chéo) → payload
-        `http://<token>.<domain>` chèn vào param của Candidate → baseline +
-        PoC chạy TRONG sandbox (target có thể fetch payload bằng server-side)
-        → chờ/poll callback từ Internet (~1 phút) → callback về = server-side
-        đã fetch payload → `verified` kèm evidence OOB (source, protocol,
-        timestamp, raw interaction); hết cửa sổ chờ không callback →
-        `rejected` kèm lý do. KHÔNG bao giờ chạy payload trực tiếp.
+    async def verify_oob_blind(candidate_id: int) -> dict[str, Any]:
+        """Xác minh agentic 1 Candidate blind class bằng OOB callback (ticket
+        #13 + batch C #17: ssrf, blind XSS, XXE, deserialization) — đi trọn
+        vòng: đăng ký interactsh RIÊNG cho Run (domain payload xoay vòng
+        per-Run, không tái sử dụng chéo) → payload theo class (oob_payload:
+        URL hệ thống / tag script kiểu dalfox / external entity XML / stream
+        Java URLDNS chỉ ping-back) chèn vào param của Candidate → baseline +
+        PoC chạy TRONG sandbox → chờ/poll callback từ Internet (~1 phút) →
+        callback về = server-side đã xử lý payload → `verified` kèm evidence
+        OOB (source, protocol, timestamp, raw interaction); hết cửa sổ chờ
+        không callback → `rejected`. LƯU Ý: Finding deserialization LUÔN kèm
+        cờ human review + severity trần (payload chỉ chứng minh ping-back,
+        không chứng minh impact). Payload gây cost (SMS/API tốn phí) bị
+        guardrails HALT. KHÔNG bao giờ chạy payload trực tiếp.
 
         Args:
-            candidate_id: id của Candidate class 'ssrf' cần xác minh.
+            candidate_id: id của Candidate blind (ssrf/xss/xxe/deserialization) cần xác minh.
 
-        Returns JSON: candidate_id, verdict (verified|rejected), score,
+        Returns JSON: candidate_id, class, verdict (verified|rejected), score,
         threshold, reason, signals, patterns, payload, token, domain,
-        callbacks (danh sách callback đã gắn), evidence_path. Status 'error'
-        nếu candidate không tồn tại/sai class.
+        callbacks (danh sách callback đã gắn), human_review_required,
+        evidence_path. Status 'error' nếu candidate không tồn tại/sai class.
         """
         return await _verify_oob(candidate_id)
 

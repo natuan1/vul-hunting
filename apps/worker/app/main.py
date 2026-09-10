@@ -530,11 +530,13 @@ class VerifyOobRequest(BaseModel):
 
 @app.post("/candidates/{candidate_id}/verify-oob")
 async def verify_candidate_oob(candidate_id: int, req: VerifyOobRequest | None = None) -> dict:
-    """Chạy trọn vòng xác minh OOB (ticket #13) cho Candidate blind class
-    'ssrf': ensure registration interactsh per-Run → payload
-    `http://<token>.<domain>` chèn vào param → baseline + PoC qua sandbox →
-    chờ/poll callback trong cửa sổ chờ (mặc định OOB_VERIFY_WAIT_S) → callback
-    về = verified kèm evidence OOB, hết cửa sổ → rejected kèm lý do."""
+    """Chạy trọn vòng xác minh OOB (ticket #13 + batch C #17) cho Candidate
+    blind class ssrf / blind XSS / XXE / deserialization: ensure registration
+    interactsh per-Run → payload theo class (`oob_payload`) chèn vào param →
+    baseline + PoC qua sandbox → chờ/poll callback trong cửa sổ chờ (mặc định
+    OOB_VERIFY_WAIT_S) → callback về = verified kèm evidence OOB, hết cửa sổ
+    → rejected kèm lý do. Deserialization: Finding luôn kèm cờ human review +
+    severity trần. Payload gây cost → guardrails HALT Run."""
     assert pool is not None
     candidate = await detect.get_candidate(pool, candidate_id)
     if candidate is None:
@@ -559,6 +561,11 @@ async def verify_candidate_oob(candidate_id: int, req: VerifyOobRequest | None =
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except oob.InteractshError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except guardrails.RunHalted as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"GUARDRAIL HALT: {exc}",
+        ) from exc
     updated = await detect.get_candidate(pool, candidate_id)
     return {"candidate": updated, "verify": result}
 

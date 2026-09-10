@@ -24,9 +24,11 @@ type Counts = {
 
 const STATUSES = ["new", "verifying", "verified", "rejected", "needs_manual"] as const;
 
-// Vocab class — batch A (#15): 7 lớp HTTP-only + các class trước đó
+// Vocab class — batch A (#15): 7 lớp HTTP-only + batch C (#17): 2 lớp blind
+// (xxe, deserialization) + các class trước đó
 const CLASSES = [
   "cors", "dirlist", "graphql", "crlf", "ssti", "headers", "disclosure",
+  "xxe", "deserialization",
   "xss", "sqli", "ssrf", "redirect", "lfi", "rce", "idor",
   "takeover", "exposure", "debug", "misconfig", "misc",
 ] as const;

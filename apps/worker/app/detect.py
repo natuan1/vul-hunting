@@ -42,11 +42,12 @@ STATUSES = ("new", "verifying", "verified", "rejected", "needs_manual", "reporte
 
 # vocab lớp lỗ hổng — thứ tự trong tuple là thứ tự ưu tiên khi 1 template
 # mang nhiều tag khớp (vd tags ["xss","reflected"] → class "xss"); không khớp
-# tag nào thì "misc" (CVE, exposure, ...)
+# tag nào thì "misc" (CVE, exposure, ...). Batch C (#17) thêm "xxe" +
+# "deserialization" — 2 lớp blind verify bằng OOB callback (app/oob.py)
 _CLASS_VOCAB = (
     "xss", "sqli", "ssrf", "redirect", "ssti", "lfi", "rce", "idor",
     "crlf", "cors", "graphql", "dirlist", "takeover", "exposure", "debug",
-    "misconfig", "disclosure", "headers",
+    "misconfig", "disclosure", "headers", "xxe", "deserialization",
 )
 
 # tag template → class cho batch A (#15, 7 lớp HTTP-only): tag thực tế trong
@@ -54,19 +55,24 @@ _CLASS_VOCAB = (
 # 1 lớp (info disclosure/debug endpoints = exposure + debug + disclosure) —
 # map về đúng 7 class của batch, áp dụng TRƯỚC ∩ vocab. CHỈ gồm tag an toàn:
 # "config" KHÔNG có ở đây — tag đó dùng chung bởi template lộ file config
-# (finding thật), không riêng missing security headers.
+# (finding thật), không riêng missing security headers. Batch C (#17) thêm
+# alias "deser" — tag rút gọn của templates deserialization.
 _TAG_CLASS_MAP = {
     "listing": "dirlist",
     "exposure": "disclosure",
     "debug": "disclosure",
     "disclosure": "disclosure",
+    "deser": "deserialization",
 }
 
-# template-id → class cho batch A: chính xác hơn tag (template missing
-# security headers chỉ có tag 'config'/misconfig dùng chung) — chỉ template
-# này mới là class 'headers' (informational)
+# template-id → class: chính xác hơn tag (vd chỉ template security-headers là
+# class 'headers', template blind-xss là blind XSS verify bằng OOB callback
+# dù tag chỉ là "xss"); batch C (#17) nhận thêm xxe + deserialization
 _TEMPLATE_ID_CLASS_MAP = (
     (re.compile(r"security[-_]headers?"), "headers"),
+    (re.compile(r"blind[-_]xss"), "xss"),
+    (re.compile(r"xxe"), "xxe"),
+    (re.compile(r"deserial"), "deserialization"),
 )
 
 # class chỉ informational (không bao giờ thành Finding/report — chỉ hiển thị);

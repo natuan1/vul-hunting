@@ -137,6 +137,18 @@ detection (nuclei templates + graphql-cop/graphw00f/crlfuzz/SSTImap cho 3 lớp 
 dụng) và một verify skill riêng xác minh bằng confirm tool output + baseline diff.
 _Avoid_: catalog classes (dài), web classes
 
+**OOB Classes**:
+Bốn lớp blind của catalog batch C — `ssrf` (SSRF, payload URL hệ thống), `xss`
+(blind XSS, payload kiểu dalfox: tag script protocol-relative), `xxe` (external
+entity XML), `deserialization` (payload ping-back URLDNS AN TOÀN duy nhất — KHÔNG
+gadget thực thi); detection qua nuclei templates + map_class, verify bằng OOB
+Callback (app/oob.py): callback về = verified kèm evidence, kèm baseline diff.
+Finding deserialization LUÔN kèm cờ "human review required" + severity trần
+(mặc định `medium`) — chỉ chứng minh được deserialize, không tự claim RCE. Mọi
+payload gây cost (SMS/API tốn phí — Code of Conduct Intigriti) bị guard chặn
+TRƯỚC khi request đi ra: Guardrails HALT Run.
+_Avoid_: blind classes (thiếu ý interactsh), ping-back classes
+
 ### AI
 
 **Hermes Agent**:

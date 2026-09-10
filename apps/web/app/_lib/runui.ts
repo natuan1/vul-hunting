@@ -49,6 +49,10 @@ export type Candidate = {
   // OOB callback (ticket #13)
   oob_callback_count: number;
   oob_evidence_path: string | null;
+  // report (ticket #18) — kết quả nộp tay trên platform
+  report_url: string | null;
+  report_notes: string | null;
+  reported_at: string | null;
 };
 
 export function severityBadgeClass(severity: string): string {
@@ -62,6 +66,7 @@ export function candidateStatusBadgeClass(status: string): string {
   if (status === "rejected") return "badge down";
   if (status === "verifying") return "badge";
   if (status === "needs_manual") return "badge"; // #14: chờ xác minh tay
+  if (status === "reported") return "badge ok"; // #18: đã nộp report
   return "badge info"; // new
 }
 
@@ -70,6 +75,7 @@ export function candidateStatusLabel(status: string): string {
   if (status === "verified") return "đã xác minh";
   if (status === "rejected") return "loại bỏ";
   if (status === "needs_manual") return "cần xác minh tay";
+  if (status === "reported") return "đã nộp report"; // #18
   return "mới";
 }
 
@@ -87,6 +93,64 @@ export function confidenceText(score: number | null, threshold: number | null): 
   const base = score.toFixed(2);
   return threshold !== null ? `${base} / ${threshold.toFixed(2)}` : base;
 }
+
+// ── Report draft (ticket #18) ──
+
+// 2 platform có mẫu report (auto-submit là v2 — KHÔNG có submit API trong UI)
+export const REPORT_PLATFORMS = ["hackerone", "intigriti"] as const;
+
+export type ReportSections = {
+  title: string;
+  severity: string;
+  summary: string;
+  steps_to_reproduce: string;
+  impact: string;
+  evidence: string;
+};
+
+// Heading theo mẫu platform — GHÉP CLIENT phải khớp format_markdown worker
+// (HackerOne: `##` + Supporting Material/References; Intigriti: `###` +
+// Description + Proof of Concept)
+function reportHeading(platform: string): Record<string, string> {
+  if (platform === "intigriti") {
+    return {
+      summary: "### Description",
+      steps: "### Steps to Reproduce",
+      impact: "### Impact",
+      evidence: "### Proof of Concept",
+    };
+  }
+  return {
+    summary: "## Summary",
+    steps: "## Steps to Reproduce",
+    impact: "## Impact",
+    evidence: "## Supporting Material/References",
+  };
+}
+
+export function composeReportMarkdown(
+  platform: string,
+  s: ReportSections,
+): string {
+  const h = reportHeading(platform);
+  return [
+    `# ${s.title}`,
+    `**Severity:** ${s.severity}`,
+    `${h.summary}\n${s.summary}`,
+    `${h.steps}\n${s.steps_to_reproduce}`,
+    `${h.impact}\n${s.impact}`,
+    `${h.evidence}\n${s.evidence}`,
+  ].join("\n\n");
+}
+
+export const REPORT_SECTION_LABEL: Record<keyof ReportSections, string> = {
+  title: "Title",
+  severity: "Severity",
+  summary: "Summary",
+  steps_to_reproduce: "Steps to Reproduce",
+  impact: "Impact",
+  evidence: "Evidence / PoC",
+};
 
 // ── OOB callback (ticket #13) ──
 

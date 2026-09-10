@@ -142,6 +142,34 @@ h1 {
   border-color: #2563eb;
 }
 
+/* nút platform đang chọn trong Report Preview (ticket #18) */
+.btn.active {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+/* form nhập của Report Preview: nội dung section + link/ghi chú khi nộp tay */
+.reportform {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 14px;
+}
+
+.reportform input,
+.reportform textarea {
+  background: #11151f;
+  color: #e6e8ee;
+  border: 1px solid #2a3350;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;

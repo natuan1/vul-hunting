@@ -5,13 +5,17 @@ import { useCallback, useEffect, useState } from "react";
 import {
   candidateStatusBadgeClass,
   candidateStatusLabel,
+  composeReportMarkdown,
   confidenceBadgeClass,
   confidenceText,
   fmtTime,
   oobBadgeClass,
   oobText,
+  REPORT_PLATFORMS,
+  REPORT_SECTION_LABEL,
   severityBadgeClass,
   type Candidate,
+  type ReportSections,
 } from "../../_lib/runui";
 
 type Evidence = {
@@ -109,6 +113,20 @@ type HttpVerifyResult = {
   verify_session_id: number | null;
 };
 
+// Report draft theo mẫu platform (ticket #18)
+type ReportDraft = {
+  candidate_id: number;
+  platform: string;
+  program_platform: string | null;
+  source: "generated" | "saved";
+  sections: ReportSections;
+  markdown: string;
+  status: string;
+  report_url: string | null;
+  report_notes: string | null;
+  reported_at: string | null;
+};
+
 // Batch A (ticket #15): 7 lớp HTTP-only dùng chung vòng verify-http
 const HTTP_CLASSES = ["cors", "dirlist", "graphql", "crlf", "ssti", "headers", "disclosure"] as const;
 const HTTP_CLASS_LABEL: Record<string, string> = {
@@ -141,6 +159,18 @@ export default function FindingDetailPage() {
   const [httpVerifying, setHttpVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // Report draft theo mẫu platform (ticket #18)
+  const [reportDraft, setReportDraft] = useState<ReportDraft | null>(null);
+  const [reportPlatform, setReportPlatform] = useState<string>("");
+  const [reportSections, setReportSections] = useState<ReportSections | null>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportSaving, setReportSaving] = useState(false);
+  const [reportMsg, setReportMsg] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [markUrl, setMarkUrl] = useState("");
+  const [markNotes, setMarkNotes] = useState("");
+  const [marking, setMarking] = useState(false);
 
   const load = useCallback(async () => {
     const res = await fetch(`/api/findings/${id}`);
@@ -267,6 +297,97 @@ export default function FindingDetailPage() {
     }
   }, [id, loadVerifyEvidence]);
 
+  const loadReport = useCallback(
+    async (platform: string, refresh: boolean = false) => {
+      setReportLoading(true);
+      try {
+        const qs = new URLSearchParams();
+        if (platform) qs.set("platform", platform);
+        if (refresh) qs.set("refresh", "1");
+        const res = await fetch(
+          `/api/findings/${id}/report?${qs.toString()}`,
+        );
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(body.detail ?? `HTTP ${res.status}`);
+        }
+        const draft = body as ReportDraft;
+        setReportDraft(draft);
+        setReportPlatform(draft.platform);
+        setReportSections(draft.sections);
+        setReportMsg(null);
+      } catch (e) {
+        setReportMsg(e instanceof Error ? e.message : String(e));
+      } finally {
+        setReportLoading(false);
+      }
+    },
+    [id],
+  );
+
+  const editSection = useCallback((key: keyof ReportSections, value: string) => {
+    setReportSections((s) => (s ? { ...s, [key]: value } : s));
+  }, []);
+
+  const copyText = useCallback(async (key: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(key);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {
+      setReportMsg("Không copy được — trình duyệt chặn clipboard.");
+    }
+  }, []);
+
+  const saveDraft = useCallback(async () => {
+    if (!reportSections) return;
+    setReportSaving(true);
+    try {
+      const res = await fetch(`/api/findings/${id}/report`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          platform: reportPlatform,
+          sections: reportSections,
+          markdown: composeReportMarkdown(reportPlatform, reportSections),
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.detail ?? `HTTP ${res.status}`);
+      }
+      setReportMsg("Đã lưu nháp trong DB.");
+      loadReport(reportPlatform).catch(() => {});
+    } catch (e) {
+      setReportMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReportSaving(false);
+    }
+  }, [id, reportPlatform, reportSections, loadReport]);
+
+  const submitReported = useCallback(async () => {
+    setMarking(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/findings/${id}/reported`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ report_url: markUrl || null, report_notes: markNotes || null }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.detail ?? `HTTP ${res.status}`);
+      }
+      const updated = (body.candidate ?? null) as Candidate | null;
+      if (updated) setCandidate(updated);
+      setReportMsg("Đã đánh dấu 'reported'.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setMarking(false);
+    }
+  }, [id, markUrl, markNotes]);
+
   const transition = useCallback(
     async (status: string) => {
       setSaving(true);
@@ -313,6 +434,18 @@ export default function FindingDetailPage() {
     }, OOB_POLL_MS);
     return () => clearInterval(timer);
   }, [candidate?.status, load, loadOob]);
+
+  // Report (ticket #18): Finding verified/reported → tải draft lần đầu +
+  // prefill link/ghi chú đã nộp (nếu có)
+  const reportable = candidate?.status === "verified" || candidate?.status === "reported";
+  useEffect(() => {
+    if (!reportable) return;
+    if (!reportDraft) loadReport("").catch(() => {});
+    if (candidate?.status === "reported") {
+      if (candidate.report_url && !markUrl) setMarkUrl(candidate.report_url);
+      if (candidate.report_notes && !markNotes) setMarkNotes(candidate.report_notes);
+    }
+  }, [reportable, candidate, reportDraft, loadReport, markUrl, markNotes]);
 
   if (error && !candidate) {
     return (
@@ -689,6 +822,143 @@ export default function FindingDetailPage() {
           </button>
         ))}
       </div>
+
+      {reportable && (
+        <>
+          <h2 className="section-title">Report (nộp tay trên platform)</h2>
+          <p className="meta">
+            Draft sinh từ evidence theo mẫu platform — sửa từng phần, copy, tự
+            nộp trên platform rồi đánh dấu bên dưới. Ứng dụng KHÔNG tự submit
+            (auto-submit là v2).
+          </p>
+          <div className="btnrow badges">
+            {REPORT_PLATFORMS.map((p) => (
+              <button
+                key={p}
+                className={`btn${p === reportPlatform ? " active" : ""}`}
+                disabled={reportLoading}
+                onClick={() => loadReport(p)}
+              >
+                {p === "hackerone" ? "HackerOne" : "Intigriti"}
+              </button>
+            ))}
+            {reportDraft && (
+              <span className="badge">
+                {reportDraft.source === "saved" ? "bản nháp đã lưu" : "sinh tự động từ evidence"}
+              </span>
+            )}
+          </div>
+          {reportMsg && <p className="meta">{reportMsg}</p>}
+          {reportLoading && <p className="meta">Đang tải draft…</p>}
+          {reportSections && (
+            <>
+              {(
+                [
+                  "title",
+                  "severity",
+                  "summary",
+                  "steps_to_reproduce",
+                  "impact",
+                  "evidence",
+                ] as const
+              ).map((key) => (
+                <div key={key} className="reportform">
+                  <p className="badges">
+                    <strong>{REPORT_SECTION_LABEL[key]}</strong>
+                    <button
+                      className="btn"
+                      onClick={() => copyText(key, reportSections[key])}
+                    >
+                      {copied === key ? "✓ Đã copy" : "Copy"}
+                    </button>
+                  </p>
+                  {key === "severity" ? (
+                    <input
+                      value={reportSections[key]}
+                      onChange={(e) => editSection(key, e.target.value)}
+                    />
+                  ) : (
+                    <textarea
+                      rows={key === "title" ? 2 : 8}
+                      value={reportSections[key]}
+                      onChange={(e) => editSection(key, e.target.value)}
+                    />
+                  )}
+                </div>
+              ))}
+              <div className="btnrow">
+                <button
+                  className="btn"
+                  onClick={() =>
+                    copyText(
+                      "all",
+                      composeReportMarkdown(reportPlatform, reportSections),
+                    )
+                  }
+                >
+                  {copied === "all" ? "✓ Đã copy" : "Copy toàn bộ markdown"}
+                </button>
+                <button className="btn" disabled={reportSaving} onClick={saveDraft}>
+                  {reportSaving ? "Đang lưu…" : "Lưu nháp"}
+                </button>
+                <button
+                  className="btn"
+                  disabled={reportLoading}
+                  onClick={() => loadReport(reportPlatform, true)}
+                >
+                  Khôi phục bản sinh tự động
+                </button>
+              </div>
+              <details>
+                <summary className="meta">Preview markdown trọn bản</summary>
+                <div className="logstream">
+                  <pre style={{ whiteSpace: "pre-wrap", margin: 0 }}>
+                    {composeReportMarkdown(reportPlatform, reportSections)}
+                  </pre>
+                </div>
+              </details>
+
+              <h3 className="section-title">Đã nộp trên platform?</h3>
+              {candidate.status === "reported" && (
+                <p className="meta">
+                  Đã nộp {fmtTime(candidate.reported_at)}
+                  {candidate.report_url && (
+                    <>
+                      {" · "}
+                      <a href={candidate.report_url} target="_blank" rel="noreferrer">
+                        {candidate.report_url}
+                      </a>
+                    </>
+                  )}
+                </p>
+              )}
+              <div className="reportform">
+                <input
+                  style={{ width: "100%" }}
+                  placeholder="Link report trên platform (vd https://hackerone.com/reports/…)"
+                  value={markUrl}
+                  onChange={(e) => setMarkUrl(e.target.value)}
+                />
+                <textarea
+                  rows={2}
+                  placeholder="Ghi chú tự do: ngày nộp, trạng thái triage, mức thưởng…"
+                  value={markNotes}
+                  onChange={(e) => setMarkNotes(e.target.value)}
+                />
+              </div>
+              <div className="btnrow">
+                <button className="btn" disabled={marking} onClick={submitReported}>
+                  {marking
+                    ? "Đang lưu…"
+                    : candidate.status === "reported"
+                      ? "Cập nhật link / ghi chú"
+                      : "Đánh dấu đã nộp (reported)"}
+                </button>
+              </div>
+            </>
+          )}
+        </>
+      )}
 
       <h2 className="section-title">Evidence</h2>
       {candidate.evidence_path ? (

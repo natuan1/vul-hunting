@@ -33,10 +33,12 @@ from .tools import (
 
 log = logging.getLogger("detect")
 
-# lifecycle của Candidate (migration 0008 + 0012 CHECK ràng buộc cùng bộ này);
-# `needs_manual` (#14): fingerprint takeover khớp nhưng chưa chứng minh được
-# kiểm soát — dừng chờ người dùng xác minh tay (claim + PoC page)
-STATUSES = ("new", "verifying", "verified", "rejected", "needs_manual")
+# lifecycle của Candidate (migration 0008 + 0012 + 0013 CHECK ràng buộc cùng
+# bộ này); `needs_manual` (#14): fingerprint takeover khớp nhưng chưa chứng
+# minh được kiểm soát — dừng chờ người dùng xác minh tay (claim + PoC page);
+# `reported` (#18): Finding đã được người dùng nộp tay lên platform (bước cuối
+# của report — KHÔNG bao giờ do worker tự chuyển)
+STATUSES = ("new", "verifying", "verified", "rejected", "needs_manual", "reported")
 
 # vocab lớp lỗ hổng — thứ tự trong tuple là thứ tự ưu tiên khi 1 template
 # mang nhiều tag khớp (vd tags ["xss","reflected"] → class "xss"); không khớp
@@ -217,7 +219,10 @@ CANDIDATE_COLS = (
     "confidence, confidence_threshold, reject_reason, verify_evidence_path, "
     "verify_session_id, baseline_session_id, "
     # OOB callback (ticket #13): count hiển thị UI + path evidence callback
-    "oob_callback_count, oob_evidence_path"
+    "oob_callback_count, oob_evidence_path, "
+    # report (ticket #18): chỉ link/ngày/ghi chú sau khi nộp tay — draft JSONB
+    # (report_drafts) có thể nặng nên KHÔNG nằm trong select list chung
+    "report_url, report_notes, reported_at"
 )
 
 _SELECT_CANDIDATES = f"SELECT {CANDIDATE_COLS}\nFROM candidates\n"

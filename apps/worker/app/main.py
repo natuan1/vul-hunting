@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import audit, detect, guardrails, hermes_client, httpverify, jobqueue, oob, recon, runner, runs, sandbox, sandbox_mcp, summary, sync, takeover, verify
+from . import audit, detect, guardrails, hermes_client, httpverify, jobqueue, oob, recon, report, runner, runs, sandbox, sandbox_mcp, summary, sync, takeover, verify
 from .config import settings
 from .db import run_migrations
 from .egress import EgressProxy
@@ -635,6 +635,75 @@ async def verify_candidate_http(candidate_id: int, req: VerifyCandidateRequest |
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     updated = await detect.get_candidate(pool, candidate_id)
     return {"candidate": updated, "verify": result}
+
+
+# ─────────────── Report theo mẫu platform (ticket #18) ───────────────
+
+
+class ReportDraftRequest(BaseModel):
+    platform: str
+    sections: dict[str, str]
+    markdown: str
+
+
+class MarkReportedRequest(BaseModel):
+    report_url: str | None = None   # link report trên platform sau khi nộp tay
+    report_notes: str | None = None  # ghi chú tự do (ngày nộp, kết quả...)
+
+
+@app.get("/candidates/{candidate_id}/report")
+async def get_candidate_report(
+    candidate_id: int,
+    platform: str | None = None,  # trống → platform của Program
+    refresh: bool = False,        # true → sinh lại từ evidence bỏ bản nháp
+) -> dict:
+    """Draft report của Finding (verified) theo mẫu platform — HackerOne
+    (## Summary / Steps to Reproduce / Impact / Supporting Material) hoặc
+    Intigriti (### Description / Steps to Reproduce / Impact / Proof of
+    Concept). Sinh THUẦN từ evidence đã có; ưu tiên bản nháp user đã lưu.
+    Endpoint chỉ ĐỌC + LƯU NHÁP — không có đường nào POST report lên platform
+    (auto-submit là v2, phải hỏi user + quyền API write)."""
+    assert pool is not None
+    try:
+        result = await report.get_report(pool, candidate_id, platform, refresh)
+    except report.ReportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="candidate không tồn tại")
+    return result
+
+
+@app.put("/candidates/{candidate_id}/report")
+async def save_candidate_report(candidate_id: int, req: ReportDraftRequest) -> dict:
+    """Lưu nháp nội dung report đã sửa trên Preview (lưu trễ trong DB theo
+    platform — không gửi đi đâu cả)."""
+    assert pool is not None
+    try:
+        result = await report.save_report_draft(
+            pool, candidate_id, req.platform, req.sections, req.markdown
+        )
+    except report.ReportError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="candidate không tồn tại")
+    return {"candidate": result}
+
+
+@app.post("/candidates/{candidate_id}/reported")
+async def mark_candidate_reported(candidate_id: int, req: MarkReportedRequest) -> dict:
+    """User đã TỰ nộp report trên platform → đánh dấu Finding `reported` +
+    link + ngày nộp (now()) + ghi chú tự do. Chỉ từ trạng thái verified
+    (hoặc cập nhật tiếp trên reported). KHÔNG gửi gì đi platform ở đây."""
+    assert pool is not None
+    try:
+        result = await report.mark_reported(
+            pool, candidate_id, req.report_url, req.report_notes
+        )
+    except report.ReportError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="candidate không tồn tại")
+    return {"candidate": result}
 
 
 @app.get("/runs/{run_id}/logs")

@@ -346,11 +346,8 @@ export default function FindingDetailPage() {
       const res = await fetch(`/api/findings/${id}/report`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          platform: reportPlatform,
-          sections: reportSections,
-          markdown: composeReportMarkdown(reportPlatform, reportSections),
-        }),
+        // markdown LƯU do worker compose từ sections — client chỉ gửi nội dung
+        body: JSON.stringify({ platform: reportPlatform, sections: reportSections }),
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {

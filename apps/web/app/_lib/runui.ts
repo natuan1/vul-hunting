@@ -108,9 +108,9 @@ export type ReportSections = {
   evidence: string;
 };
 
-// Heading theo mẫu platform — GHÉP CLIENT phải khớp format_markdown worker
-// (HackerOne: `##` + Supporting Material/References; Intigriti: `###` +
-// Description + Proof of Concept)
+// Heading theo mẫu platform — dùng cho COPY/PREVIEW tức thì trên client;
+// markdown LƯU DB do worker compose (format_markdown) khi PUT — một nguồn
+// sự thật ở worker, bản ghép client chỉ để hiển thị trước khi reload.
 function reportHeading(platform: string): Record<string, string> {
   if (platform === "intigriti") {
     return {

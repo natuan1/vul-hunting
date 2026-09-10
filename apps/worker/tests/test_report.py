@@ -49,7 +49,7 @@ CANDIDATE = {
     "first_seen": "2026-01-01T00:00:00Z",
 }
 
-CANARY = "https://canary.example/poc"
+PAYLOAD = "https://canary.example/poc"
 
 BASELINE_URL = "https://app.example.com/redirect?next=https%3A//example.com/"
 POC_URL = "https://app.example.com/redirect?next=https%3A//canary.example/poc"
@@ -58,7 +58,7 @@ VERIFY_EVIDENCE = {
     "schema": "vulhunt.verify-evidence/1",
     "target": CANDIDATE["target"],
     "param": "next",
-    "payload": CANARY,
+    "payload": PAYLOAD,
     "baseline": {
         "url": BASELINE_URL, "status": 200, "headers": {"content-type": "text/html"},
         "content_type": "text/html", "body_length": 1234, "body": "home",
@@ -66,8 +66,8 @@ VERIFY_EVIDENCE = {
     },
     "poc": {
         "url": POC_URL, "status": 302,
-        "headers": {"location": CANARY, "content-type": "text/html"},
-        "content_type": "text/html", "body_length": 0, "body": "", "error": None,
+        "headers": {"location": PAYLOAD, "content-type": "text/html"},
+        "content_type": "text/html", "body_length": 13, "body": "302MovedBody", "error": None,
     },
     "analysis": {
         "signals": ["location_redirect"],
@@ -99,8 +99,8 @@ def test_extract_bundle_từ_verify_evidence_redirect():
     assert b["baseline_url"] == BASELINE_URL
     assert b["poc_status"] == 302
     assert b["baseline_status"] == 200
-    assert b["poc_location"] == CANARY
-    assert b["payload"] == CANARY
+    assert b["poc_location"] == PAYLOAD
+    assert b["payload"] == PAYLOAD
     assert "location_redirect" in b["signals"]
     assert b["curl"]  # có curl command cho PoC
 
@@ -109,7 +109,8 @@ def test_extract_bundle_từ_takeover_evidence():
     take = {
         "schema": "vulhunt.takeover-evidence/1",
         "target": "lost.example.com",
-        "cname": ["lost.example.com.cdn.github.io"],
+        # recon_assets.cname là TEXT → evidence takeover ghi cname CHUỖI
+        "cname": "lost.example.com.cdn.github.io.",
         "fingerprint": {"service": "github-pages", "claim_host": "natuan1.github.io"},
         "poc": {"username": "natuan1", "token": "tok-1", "page": "<html>vulhunt</html>"},
         "deploy": {"provider": "github-pages", "url": "https://natuan1.github.io/tok-1/"},
@@ -118,7 +119,8 @@ def test_extract_bundle_từ_takeover_evidence():
     }
     b = extract_bundle(None, take, None)
     assert b["takeover"]["service"] == "github-pages"
-    assert b["takeover"]["cname"] == ["lost.example.com.cdn.github.io"]
+    # cname chuỗi → 1 phần tử, KHÔNG mảnh ra từng ký tự
+    assert b["takeover"]["cname"] == ["lost.example.com.cdn.github.io."]
     assert b["takeover"]["poc_url"] == "https://natuan1.github.io/tok-1/"
     assert b["takeover"]["confirm_status"] == 200
     assert b["curl"]  # curl cho PoC page
@@ -200,13 +202,14 @@ def test_build_draft_evidence_nhúng_đúng_chỗ():
     evidence = draft["sections"]["evidence"]
     # PoC URL nằm trong steps
     assert POC_URL in steps
-    assert CANARY in steps  # payload được nêu trong steps
+    assert PAYLOAD in steps  # payload được nêu trong steps
     # curl + response diff nằm trong evidence
     assert "curl" in evidence
     assert POC_URL in evidence
     assert "302" in evidence  # status PoC
     assert "200" in evidence  # status baseline
-    assert CANARY in evidence  # Location header PoC
+    assert PAYLOAD in evidence  # Location header PoC
+    assert "302MovedBody" in evidence  # response body PoC (excerpt) nhúng đúng chỗ
 
 
 def test_build_draft_không_có_verify_evidence_vẫn_sinh_draft_từ_candidate():
@@ -423,7 +426,7 @@ async def test_save_report_draft_lưu_jsonb_theo_platform():
     pool = ReportFakePool(_row())
     sections = {"title": "T", "severity": "high", "summary": "s",
                 "steps_to_reproduce": "1. x", "impact": "i", "evidence": "e"}
-    out = await save_report_draft(pool, 7, "intigriti", sections, "md-đã-sửa")
+    out = await save_report_draft(pool, 7, "intigriti", sections)
     assert out is not None
     assert len(pool.updates) == 1
     sql, params = pool.updates[0]
@@ -431,14 +434,18 @@ async def test_save_report_draft_lưu_jsonb_theo_platform():
     # JSONB merge theo platform: {"intigriti": {...}}
     payload = json.loads(params[-1])
     assert "intigriti" in payload
-    assert payload["intigriti"]["markdown"] == "md-đã-sửa"
+    # markdown LƯU do worker compose từ sections — client không quyết định
+    assert payload["intigriti"]["markdown"] == format_markdown(sections, "intigriti")
+    # sections thiếu key → compose bằng chuỗi rỗng, không nổ
+    out2 = await save_report_draft(pool, 7, "hackerone", {"title": "chỉ title"})
+    assert out2 is not None
 
 
 @pytest.mark.asyncio
 async def test_save_report_draft_chưa_verified_ném_lỗi():
     pool = ReportFakePool(_row(status="new"))
     with pytest.raises(ReportError):
-        await save_report_draft(pool, 7, "hackerone", {}, "")
+        await save_report_draft(pool, 7, "hackerone", {})
 
 
 @pytest.mark.asyncio

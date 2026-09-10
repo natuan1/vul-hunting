@@ -642,8 +642,7 @@ async def verify_candidate_http(candidate_id: int, req: VerifyCandidateRequest |
 
 class ReportDraftRequest(BaseModel):
     platform: str
-    sections: dict[str, str]
-    markdown: str
+    sections: dict[str, str]  # markdown trọn bản do worker compose khi lưu
 
 
 class MarkReportedRequest(BaseModel):
@@ -700,7 +699,8 @@ async def mark_candidate_reported(candidate_id: int, req: MarkReportedRequest) -
             pool, candidate_id, req.report_url, req.report_notes
         )
     except report.ReportError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        # nhất quán với GET/PUT report: sai điều kiện đầu vào/lifecycle → 422
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="candidate không tồn tại")
     return {"candidate": result}

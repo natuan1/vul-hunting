@@ -21,7 +21,6 @@ from datetime import datetime, timezone
 
 import asyncpg
 
-from .config import settings  # noqa: F401 — chỉ đọc settings.evidence_dir qua detect.read_evidence
 from .detect import CANDIDATE_COLS, read_evidence
 
 log = logging.getLogger("report")
@@ -61,6 +60,19 @@ def _clip(text: str, cap: int = 1500) -> str:
     return text[:cap]
 
 
+def _as_str_list(value) -> list[str]:
+    """Chuẩn hoá cname sang list chuỗi — evidence takeover ghi cname dạng
+    CHUỖI (recon_assets.cname là TEXT) nhưng schema cũ/subzy parse trả list;
+    chuỗi phải là 1 phần tử, KHÔNG mảnh ra từng ký tự."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value if str(v).strip()]
+    return [str(value)]
+
+
 def _profile_fields(profile: dict | None) -> dict:
     """Trường cần cho report từ 1 profile probe (baseline hoặc PoC)."""
     if not isinstance(profile, dict):
@@ -71,6 +83,7 @@ def _profile_fields(profile: dict | None) -> dict:
         "status": profile.get("status"),
         "location": str(headers.get("location") or ""),
         "body_length": profile.get("body_length"),
+        "body": str(profile.get("body") or ""),
         "error": profile.get("error"),
     }
 
@@ -85,6 +98,7 @@ def extract_bundle(detection: dict | None, verify: dict | None, oob: dict | None
         "baseline_status": None,
         "poc_location": "",
         "baseline_location": "",
+        "poc_body": "",
         "payload": "",
         "signals": [],
         "patterns": [],
@@ -121,7 +135,7 @@ def extract_bundle(detection: dict | None, verify: dict | None, oob: dict | None
             poc_url = deploy.get("url") or None
             bundle["takeover"] = {
                 "target": verify.get("target"),
-                "cname": [str(c) for c in (verify.get("cname") or [])],
+                "cname": _as_str_list(verify.get("cname")),
                 "service": fp.get("service"),
                 "claim_host": fp.get("claim_host"),
                 "poc_url": poc_url,
@@ -140,6 +154,7 @@ def extract_bundle(detection: dict | None, verify: dict | None, oob: dict | None
             bundle["poc_status"] = poc.get("status")
             bundle["baseline_location"] = base.get("location") or ""
             bundle["poc_location"] = poc.get("location") or ""
+            bundle["poc_body"] = _clip(poc.get("body") or "", 800)
             if bundle["poc_url"]:
                 bundle["curl"] = build_curl(bundle["poc_url"])
 
@@ -405,7 +420,7 @@ def _evidence_text(candidate: dict, bundle: dict) -> str:
 
     takeover = bundle.get("takeover")
     if isinstance(takeover, dict):
-        rows = ["**Takeover proof:**"]
+        rows = ["**Takeover evidence:**"]
         if takeover.get("cname"):
             rows.append(f"- CNAME: {', '.join(f'`{c}`' for c in takeover['cname'])}")
         if takeover.get("service"):
@@ -430,6 +445,11 @@ def _evidence_text(candidate: dict, bundle: dict) -> str:
         if bundle.get("payload"):
             rows.append(f"- Payload: `{bundle['payload']}`")
         blocks.append("\n".join(rows))
+        if bundle.get("poc_body"):
+            blocks.append(
+                "PoC response body (excerpt):\n\n```http\n"
+                f"{bundle['poc_body']}\n```"
+            )
 
     detail = bundle.get("detail")
     if isinstance(detail, dict):
@@ -638,20 +658,24 @@ async def get_report(
 
 
 async def save_report_draft(
-    pool: asyncpg.Pool, candidate_id: int, platform: str,
-    sections: dict, markdown: str,
+    pool: asyncpg.Pool, candidate_id: int, platform: str, sections: dict,
 ) -> dict | None:
     """Lưu nháp report (nội dung user đã sửa trên Preview) vào
-    `report_drafts` JSONB theo platform — lưu trễ để preview lại sau."""
+    `report_drafts` JSONB theo platform — lưu trễ để preview lại sau.
+    Worker là NGUỒN SỰ THẬT của markdown: compose lại từ sections tại đây
+    (client chỉ copy/preview tức thì, không quyết định nội dung lưu)."""
     platform = _resolve_platform(platform, None)
     candidate = await _fetch_candidate(pool, candidate_id)
     if candidate is None:
         return None
     _require_reportable(candidate)
+    section_keys = ("title", "severity", "summary", "steps_to_reproduce",
+                    "impact", "evidence")
+    safe = {k: str((sections or {}).get(k, "")) for k in section_keys}
     draft = {
         "platform": platform,
-        "sections": sections,
-        "markdown": markdown,
+        "sections": safe,
+        "markdown": format_markdown(safe, platform),
         "saved_at": datetime.now(timezone.utc).isoformat(),
     }
     payload = json.dumps({platform: draft}, ensure_ascii=False)

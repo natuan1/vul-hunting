@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import audit, detect, guardrails, hermes_client, httpverify, jobqueue, oob, recon, report, runner, runs, sandbox, sandbox_mcp, summary, sync, takeover, verify
+from . import audit, detect, guardrails, hermes_client, httpverify, jobqueue, oob, recon, report, runner, runs, sandbox, sandbox_mcp, secrets_scan, sqli, summary, sync, takeover, verify
 from .config import settings
 from .db import run_migrations
 from .egress import EgressProxy
@@ -640,6 +640,74 @@ async def verify_candidate_http(candidate_id: int, req: VerifyCandidateRequest |
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    updated = await detect.get_candidate(pool, candidate_id)
+    return {"candidate": updated, "verify": result}
+
+
+# ─────────────── Catalog batch B (ticket #16): secrets + SQLi ───────────────
+
+
+@app.post("/candidates/{candidate_id}/verify-secret")
+async def verify_candidate_secret(candidate_id: int) -> dict:
+    """Chạy trọn vòng xác minh Candidate class `secret` (batch B, ticket #16):
+    sandbox quét LẠI nội dung URL hiện tại (baseline KHÔNG thu body + rescan
+    trufflehog không verification, mask trước khi emit) → đối chiếu detector +
+    prefix với detection (đã verify-key) → vẫn còn exposed → Finding; đã bị
+    xoá/đổi → rejected. Evidence KHÔNG bao giờ chứa key đầy đủ (chỉ prefix)."""
+    assert pool is not None
+    candidate = await detect.get_candidate(pool, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="candidate không tồn tại")
+    if candidate["class"] != secrets_scan.SECRET_CANDIDATE_CLASS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"candidate thuộc class '{candidate['class']}' — vòng verify này "
+                f"dành cho class '{secrets_scan.SECRET_CANDIDATE_CLASS}' "
+                "(exposed secrets)"
+            ),
+        )
+    try:
+        result = await secrets_scan.run_secret_verification(pool, candidate)
+    except verify.ProbeBlocked as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    updated = await detect.get_candidate(pool, candidate_id)
+    return {"candidate": updated, "verify": result}
+
+
+@app.post("/candidates/{candidate_id}/verify-sqli")
+async def verify_candidate_sqli(candidate_id: int) -> dict:
+    """Chạy trọn vòng xác minh Candidate class `sqli` (batch B, ticket #16):
+    sqlmap CHỈ chạy trong sandbox với profile an toàn mức thấp (technique
+    error/boolean `--technique=BE`, level 1 risk 1, 1 thread, delay ≥ 1 req/s
+    theo rate limit của Run) — KHÔNG time-based nặng, KHÔNG dump dữ liệu,
+    KHÔNG đọc file hệ thống. Dấu hiệu dump/đọc file trong output → guardrails
+    HALT Run + cảnh báo, không tiếp tục (PoC = chứng minh injection)."""
+    assert pool is not None
+    candidate = await detect.get_candidate(pool, candidate_id)
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="candidate không tồn tại")
+    if candidate["class"] not in sqli.SQLI_VERIFY_CLASSES:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"candidate thuộc class '{candidate['class']}' — vòng verify này "
+                f"dành cho class {', '.join(sqli.SQLI_VERIFY_CLASSES)} (SQLi)"
+            ),
+        )
+    try:
+        result = await sqli.run_sqli_verification(pool, candidate)
+    except verify.ProbeBlocked as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except guardrails.RunHalted as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"GUARDRAIL HALT: {exc}",
+        ) from exc
     updated = await detect.get_candidate(pool, candidate_id)
     return {"candidate": updated, "verify": result}
 

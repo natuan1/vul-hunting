@@ -1,0 +1,112 @@
+#!/bin/bash
+# trufflehog-urls (batch B, ticket #16): stdin danh sách URL (1 URL/dòng — đã
+# qua Scope Validator + select URL nhạy cảm) → fetch nội dung từng URL →
+# trufflehog quét filesystem với VERIFY-KEY BẬT (--results=verified) → stdout
+# JSONL mỗi hit:
+#   {"url", "detector", "decoder", "verified", "masked", "fingerprint",
+#    "raw_length"}
+#
+# AN TOÀN: secret raw KHÔNG BAO GIỜ rời container — mask prefix-only trước khi
+# in (khớp mask_secret() của worker, tests/test_secrets.py chặn lệch nhau).
+# `fingerprint` = sha256(raw)[:12] — vân tay đối chiếu khi verify (key bị
+# rotate sẽ lệch fingerprint dù prefix giống); hash không đảo ngược được key
+# entropy cao, không vi phạm "chỉ hiện prefix".
+# Chỉ secret verify-key thành công (verified=true) mới đáng để worker tạo
+# Candidate (worker lọc verified lần nữa — phòng hờ).
+#
+# PACING: fetch cách nhau FETCH_DELAY_S giây (mặc định 1) — tôn trọng rate
+# limit nghiêm ngặt của Run; worker truyền qua docker -e cùng header định danh
+# (IDENT_HEADER_NAME/IDENT_HEADER_VALUE).
+set -u
+
+command -v trufflehog >/dev/null 2>&1 || { echo "trufflehog không có trong image" >&2; exit 1; }
+command -v curl >/dev/null 2>&1 || { echo "curl không có trong image" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "python3 không có trong image" >&2; exit 1; }
+
+DELAY="${FETCH_DELAY_S:-1}"
+case "$DELAY" in (*[!0-9.]*|'') DELAY=1 ;; esac
+
+IDENT_ARGS=()
+if [ -n "${IDENT_HEADER_NAME:-}" ] && [ -n "${IDENT_HEADER_VALUE:-}" ]; then
+    IDENT_ARGS=(-H "$IDENT_HEADER_NAME: $IDENT_HEADER_VALUE")
+fi
+
+D=$(mktemp -d)
+trap 'rm -rf "$D"' EXIT
+
+# ── fetch từng URL (cap để giữ nhịp điều độ; file trống/lỗi bỏ qua) ──
+MAX_URLS=50
+n=0
+while IFS= read -r url; do
+    [ -n "$url" ] || continue
+    [ "$n" -lt "$MAX_URLS" ] || break
+    f=$(printf '%04d' "$n")
+    curl "${IDENT_ARGS[@]}" -sS -m 20 -o "$D/$f.txt" "$url" 2>/dev/null || continue
+    [ -s "$D/$f.txt" ] || continue
+    printf '%s' "$url" > "$D/$f.url"
+    n=$((n + 1))
+    sleep "$DELAY"
+done
+
+[ "$n" -gt 0 ] || exit 0
+
+# ── trufflehog: verify-key BẬT — secret phải hợp lệ mới được báo ──
+# (--results=verified: chỉ output secret đã confirm valid qua API provider;
+# tên cũ --only-verified đã bị bỏ ở các bản mới)
+TRUFFLEHOG_DIR="$D" trufflehog filesystem "$D" --json \
+    --results=verified --no-update 2>/dev/null | TRUFFLEHOG_DIR="$D" python3 -c '
+import hashlib, json, os, sys
+
+D = os.environ["TRUFFLEHOG_DIR"]
+MASK_KEEP = 4  # PHẢI khớp mask_secret() của worker (tests/test_secrets.py)
+
+
+def mask(raw):
+    raw = str(raw or "")
+    if raw.endswith("…"):
+        return raw
+    if len(raw) < MASK_KEEP * 2:
+        return "…"
+    return raw[:MASK_KEEP] + "…"
+
+
+def fingerprint(raw):
+    # vân tay đối chiếu verify — hash không đảo ngược được key entropy cao
+    return hashlib.sha256(str(raw or "").encode()).hexdigest()[:12]
+
+
+url_by_file = {}
+for name in os.listdir(D):
+    if name.endswith(".url"):
+        try:
+            with open(os.path.join(D, name), encoding="utf-8", errors="replace") as fh:
+                url_by_file[os.path.join(D, name[: -4] + ".txt")] = fh.read().strip()
+        except OSError:
+            pass
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        continue
+    if not isinstance(obj, dict):
+        continue
+    file = (((obj.get("SourceMetadata") or {}).get("Data") or {}).get("Filesystem") or {}).get("file") \
+        or ((obj.get("SourceMetadata") or {}).get("Data") or {}).get("File") or ""
+    url = url_by_file.get(file, "")
+    if not url:
+        continue
+    raw = str(obj.get("Raw") or obj.get("RawV2") or "")
+    print(json.dumps({
+        "url": url,
+        "detector": str(obj.get("DetectorName") or ""),
+        "decoder": str(obj.get("DecoderName") or ""),
+        "verified": bool(obj.get("Verified", False)),
+        "masked": mask(raw),
+        "fingerprint": fingerprint(raw),
+        "raw_length": len(raw),
+    }, ensure_ascii=False))
+'

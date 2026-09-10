@@ -106,6 +106,13 @@ class Settings:
     takeover_verify_wait_s: float = float(os.environ.get("TAKEOVER_VERIFY_WAIT_S", "120"))
     takeover_verify_poll_s: float = float(os.environ.get("TAKEOVER_VERIFY_POLL_S", "10"))
 
+    # ── catalog batch B (ticket #16) — exposed secrets ──
+    # cap số URL nhạy cảm (.env/bucket/JS/backup) quét trufflehog mỗi Run
+    secrets_max_targets: int = int(os.environ.get("SECRETS_MAX_TARGETS", "25"))
+    # sqlmap (ticket #16): sàn delay giữa 2 request — không bao giờ nhanh hơn
+    # 1 req/s dù Run cho phép (profile an toàn mức thấp, trong sandbox)
+    sqlmap_min_delay_s: float = float(os.environ.get("SQLMAP_MIN_DELAY_S", "1"))
+
     # ── guardrails (ticket #19): phân loại lỗi TRƯỚC, phản ứng SAU ──
     # cap Tool Execution đồng thời (chống WAF ban) — cũng là số consumer queue
     # song song (mỗi consumer 1 Run; cap bên trong vẫn giữ nếu consumer nhiều hơn)

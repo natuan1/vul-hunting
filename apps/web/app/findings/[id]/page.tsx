@@ -114,6 +114,38 @@ type HttpVerifyResult = {
   verify_session_id: number | null;
 };
 
+// Batch B (ticket #16): exposed secrets — evidence chỉ chứa prefix đã che
+type SecretVerifyResult = {
+  class: string;
+  verdict: string;
+  score: number;
+  threshold: number;
+  reason: string;
+  signals: string[];
+  patterns: string[];
+  expected: { detector: string; masked: string };
+  evidence_path: string | null;
+  baseline_session_id: number | null;
+  verify_session_id: number | null;
+};
+
+// Batch B (ticket #16): SQLi — sqlmap trong sandbox, profile an toàn
+type SqliVerifyResult = {
+  class: string;
+  verdict: string;
+  score: number;
+  threshold: number;
+  reason: string;
+  signals: string[];
+  patterns: string[];
+  sqlmap: { parameters: string[]; types: string[]; payloads: string[]; dbms: string | null };
+  violations: string[];
+  delay_s: number | null;
+  evidence_path: string | null;
+  baseline_session_id: number | null;
+  verify_session_id: number | null;
+};
+
 // Report draft theo mẫu platform (ticket #18)
 type ReportDraft = {
   candidate_id: number;
@@ -166,6 +198,10 @@ export default function FindingDetailPage() {
   const [takeoverVerifying, setTakeoverVerifying] = useState(false);
   const [httpResult, setHttpResult] = useState<HttpVerifyResult | null>(null);
   const [httpVerifying, setHttpVerifying] = useState(false);
+  const [secretResult, setSecretResult] = useState<SecretVerifyResult | null>(null);
+  const [secretVerifying, setSecretVerifying] = useState(false);
+  const [sqliResult, setSqliResult] = useState<SqliVerifyResult | null>(null);
+  const [sqliVerifying, setSqliVerifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -303,6 +339,52 @@ export default function FindingDetailPage() {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setHttpVerifying(false);
+    }
+  }, [id, loadVerifyEvidence]);
+
+  const runSecretVerify = useCallback(async () => {
+    setSecretVerifying(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/findings/${id}/verify-secret`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.detail ?? `HTTP ${res.status}`);
+      }
+      setSecretResult(body.verify as SecretVerifyResult);
+      setCandidate((body.candidate ?? null) as Candidate | null);
+      loadVerifyEvidence().catch(() => {});
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSecretVerifying(false);
+    }
+  }, [id, loadVerifyEvidence]);
+
+  const runSqliVerify = useCallback(async () => {
+    setSqliVerifying(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/findings/${id}/verify-sqli`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.detail ?? `HTTP ${res.status}`);
+      }
+      setSqliResult(body.verify as SqliVerifyResult);
+      setCandidate((body.candidate ?? null) as Candidate | null);
+      loadVerifyEvidence().catch(() => {});
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSqliVerifying(false);
     }
   }, [id, loadVerifyEvidence]);
 
@@ -742,6 +824,108 @@ export default function FindingDetailPage() {
                   Verify session: baseline{" "}
                   <a href={`/runs/${candidate.run_id}`}>#{httpResult.baseline_session_id}</a>{" "}
                   · PoC #{httpResult.verify_session_id}
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {candidate.class === "secret" && (
+        <>
+          <h2 className="section-title">Xác minh exposed secrets (trufflehog verify-key)</h2>
+          <p className="meta">
+            Sandbox quét LẠI nội dung URL hiện tại (baseline không thu body + rescan
+            trufflehog không verification) rồi đối chiếu detector + prefix với detection
+            (đã verify-key). Vẫn còn exposed → Finding; đã bị xoá/đổi → rejected.
+            Evidence KHÔNG bao giờ chứa key đầy đủ — chỉ prefix đã che; khi report cũng
+            KHÔNG dán key nguyên bản.
+          </p>
+          <div className="btnrow">
+            <button className="btn" disabled={secretVerifying} onClick={runSecretVerify}>
+              {secretVerifying
+                ? "Đang quét lại trong sandbox…"
+                : "▶ Chạy vòng xác minh secret"}
+            </button>
+          </div>
+          {secretResult && (
+            <div>
+              <p className="badges">
+                <span className={secretResult.verdict === "verified" ? "badge ok" : "badge down"}>
+                  {secretResult.verdict === "verified" ? "Finding" : "false positive"} ·{" "}
+                  score {secretResult.score.toFixed(2)} / ngưỡng{" "}
+                  {secretResult.threshold.toFixed(2)}
+                </span>
+                {secretResult.expected?.detector && (
+                  <span className="badge info">
+                    secret: {secretResult.expected.detector} ({secretResult.expected.masked})
+                  </span>
+                )}
+                {secretResult.patterns.map((p) => (
+                  <span key={p} className="badge info">pattern: {p}</span>
+                ))}
+              </p>
+              <p className="meta">{secretResult.reason}</p>
+              {secretResult.verify_session_id !== null && (
+                <p className="meta">
+                  Verify session: baseline{" "}
+                  <a href={`/runs/${candidate.run_id}`}>#{secretResult.baseline_session_id}</a>{" "}
+                  · rescan #{secretResult.verify_session_id}
+                </p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {candidate.class === "sqli" && (
+        <>
+          <h2 className="section-title">Xác minh SQLi (sqlmap trong sandbox)</h2>
+          <p className="meta">
+            sqlmap CHỈ chạy trong sandbox với profile an toàn mức thấp: technique
+            error/boolean (--technique=BE), level 1, risk 1, 1 thread, delay ≥ 1 req/s theo
+            rate limit của Run — KHÔNG time-based nặng, KHÔNG dump dữ liệu, KHÔNG đọc file
+            hệ thống (minimum testing necessary). Dấu hiệu dump/đọc file → guardrails HALT
+            Run, không tiếp tục. PoC = chứng minh injection được, không phải chiếm dữ liệu.
+          </p>
+          <div className="btnrow">
+            <button className="btn" disabled={sqliVerifying} onClick={runSqliVerify}>
+              {sqliVerifying
+                ? "sqlmap đang chạy trong sandbox…"
+                : "▶ Chạy vòng xác minh SQLi"}
+            </button>
+          </div>
+          {sqliResult && (
+            <div>
+              <p className="badges">
+                <span className={sqliResult.verdict === "verified" ? "badge ok" : "badge down"}>
+                  {sqliResult.verdict === "verified" ? "Finding" : "false positive"} ·{" "}
+                  score {sqliResult.score.toFixed(2)} / ngưỡng{" "}
+                  {sqliResult.threshold.toFixed(2)}
+                </span>
+                {sqliResult.sqlmap?.dbms && (
+                  <span className="badge info">DBMS: {sqliResult.sqlmap.dbms}</span>
+                )}
+                {sqliResult.delay_s !== null && (
+                  <span className="badge info">delay: {sqliResult.delay_s}s/request</span>
+                )}
+                {sqliResult.patterns.map((p) => (
+                  <span key={p} className="badge info">pattern: {p}</span>
+                ))}
+              </p>
+              <p className="meta">{sqliResult.reason}</p>
+              {sqliResult.sqlmap?.types && sqliResult.sqlmap.types.length > 0 && (
+                <p className="badges">
+                  {sqliResult.sqlmap.types.map((t) => (
+                    <span key={t} className="badge info">technique: {t}</span>
+                  ))}
+                </p>
+              )}
+              {sqliResult.verify_session_id !== null && (
+                <p className="meta">
+                  Verify session: baseline{" "}
+                  <a href={`/runs/${candidate.run_id}`}>#{sqliResult.baseline_session_id}</a>{" "}
+                  · sqlmap #{sqliResult.verify_session_id}
                 </p>
               )}
             </div>

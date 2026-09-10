@@ -1,0 +1,6 @@
+#!/bin/bash
+# sqlmap (batch B, ticket #16): wrapper gọi sqlmap.py bằng python3 hệ thống
+# (sqlmap thuần python, không cần pip). Profile an toàn KHÔNG nằm ở đây —
+# worker dựng args (app/sqli.py build_sqlmap_args) và sandbox script chỉ chạy
+# đúng lệnh đó; mọi lần chạy đi qua sandbox bridge (ADR-0003).
+exec python3 /opt/sqlmap/sqlmap.py "$@"

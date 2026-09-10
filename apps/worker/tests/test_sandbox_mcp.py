@@ -140,6 +140,8 @@ async def test_run_in_sandbox_over_mcp_http(monkeypatch):
                     "verify_oob",
                     "verify_subdomain_takeover",
                     "verify_http_class",
+                    "verify_secret",
+                    "verify_sqli",
                 }
 
                 result = await session.call_tool(
@@ -322,6 +324,136 @@ async def test_verify_open_redirect_từ_chối_class_khác_và_id_lạ(monkeypa
                     assert data["status"] == "error"
                     assert want in data["reason"]
                 assert calls == []  # không chạy verify oan cho candidate sai
+    finally:
+        server.should_exit = True
+        await asyncio.gather(task, return_exceptions=True)
+
+
+# ───────── verify_secret / verify_sqli qua MCP (batch B, ticket #16) ─────────
+
+
+def _stub_batch_b_layer(monkeypatch, candidates: dict, summaries: dict, calls: list):
+    """Stub TẦNG DƯỚI (detect.get_candidate + run_secret_verification /
+    run_sqli_verification) để tool wrapper THẬT (class check + note) đi trọn."""
+    from app import detect, secrets_scan, sqli
+
+    async def fake_get_candidate(pool, candidate_id):
+        return candidates.get(candidate_id)
+
+    async def fake_run_secret(pool, candidate, **kw):
+        calls.append({"tool": "secret", "candidate": candidate})
+        return summaries["secret"]
+
+    async def fake_run_sqli(pool, candidate, **kw):
+        calls.append({"tool": "sqli", "candidate": candidate})
+        return summaries["sqli"]
+
+    monkeypatch.setattr(detect, "get_candidate", fake_get_candidate)
+    monkeypatch.setattr(secrets_scan, "run_secret_verification", fake_run_secret)
+    monkeypatch.setattr(sqli, "run_sqli_verification", fake_run_sqli)
+
+
+@pytest.mark.asyncio
+async def test_verify_secret_over_mcp(monkeypatch):
+    """Batch B (#16): tool verify_secret trên wire — class 'secret' → pipeline
+    stub → verdict JSON kèm note evidence (mask prefix)."""
+    calls: list = []
+    candidate = {"id": 31, "run_id": 7, "class": "secret",
+                 "target": "https://app.other.com/.env",
+                 "param": "", "status": "new"}
+    summary = {
+        "candidate_id": 31, "run_id": 7, "class": "secret",
+        "expected": {"detector": "AWS", "masked": "AKIA…"},
+        "verdict": "verified", "score": 0.95, "threshold": 0.85,
+        "reason": "Secret vẫn còn được phục vụ tại URL",
+        "signals": ["secret_still_exposed"], "patterns": ["secret_still_exposed"],
+        "evidence_path": "/data/evidence/7/secrets/031-verify.json",
+        "baseline_session_id": 201, "verify_session_id": 202,
+    }
+    _stub_batch_b_layer(
+        monkeypatch, {31: candidate},
+        {"secret": summary, "sqli": {}}, calls,
+    )
+
+    app = await _mcp_app(monkeypatch, _ok_verify([]))
+    server, task, port = await _serve(app)
+    try:
+        headers = {"Authorization": "Bearer test-key"}
+        async with streamablehttp_client(
+            f"http://127.0.0.1:{port}/mcp", headers=headers
+        ) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool("verify_secret", {"candidate_id": 31})
+                assert result.isError is False
+                data = json.loads(result.content[0].text)
+                assert data["verdict"] == "verified"
+                assert data["class"] == "secret"
+                assert "KHÔNG bao giờ chứa key đầy đủ" in data["note"]
+                # class lạ → error, pipeline không chạy
+                res = await session.call_tool("verify_secret", {"candidate_id": 99})
+                data = json.loads(res.content[0].text)
+                assert data["status"] == "error"
+                assert len(calls) == 1
+    finally:
+        server.should_exit = True
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_verify_sqli_over_mcp(monkeypatch):
+    """Batch B (#16): tool verify_sqli trên wire — class 'sqli' → pipeline stub
+    → verdict JSON kèm note profile an toàn; RunHalted → status error."""
+    calls: list = []
+    candidate = {"id": 32, "run_id": 7, "class": "sqli",
+                 "target": "https://app.other.com/item?id=3",
+                 "param": "id", "status": "new"}
+    summary = {
+        "candidate_id": 32, "run_id": 7, "class": "sqli",
+        "verdict": "verified", "score": 0.95, "threshold": 0.85,
+        "reason": "sqlmap xác nhận injectable",
+        "signals": ["sqlmap_injectable"], "patterns": ["sqlmap_injectable"],
+        "sqlmap": {"parameters": ["id"], "types": ["boolean-based blind"],
+                   "payloads": ["id=3 AND 1=1"], "dbms": "MySQL"},
+        "violations": [], "delay_s": 1.0,
+        "evidence_path": "/data/evidence/7/sqli/032-verify.json",
+        "baseline_session_id": 203, "verify_session_id": 204,
+    }
+    from app import detect as detect_mod, guardrails, sqli as sqli_mod
+
+    async def fake_get_candidate(pool, candidate_id):
+        return {32: candidate, 33: {**candidate, "id": 33}}.get(candidate_id)
+
+    async def fake_run_sqli(pool, candidate, **kw):
+        calls.append({"candidate": candidate})
+        if candidate["id"] == 33:
+            raise guardrails.RunHalted("sqlmap có dấu hiệu dump — stop-condition")
+        return summary
+
+    monkeypatch.setattr(detect_mod, "get_candidate", fake_get_candidate)
+    monkeypatch.setattr(sqli_mod, "run_sqli_verification", fake_run_sqli)
+
+    app = await _mcp_app(monkeypatch, _ok_verify([]))
+    server, task, port = await _serve(app)
+    try:
+        headers = {"Authorization": "Bearer test-key"}
+        async with streamablehttp_client(
+            f"http://127.0.0.1:{port}/mcp", headers=headers
+        ) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.call_tool("verify_sqli", {"candidate_id": 32})
+                assert result.isError is False
+                data = json.loads(result.content[0].text)
+                assert data["verdict"] == "verified"
+                assert data["violations"] == []
+                assert "PoC chỉ chứng minh injection" in data["note"]
+                # stop-condition: RunHalted → status error kèm cảnh báo HALT
+                res = await session.call_tool("verify_sqli", {"candidate_id": 33})
+                data = json.loads(res.content[0].text)
+                assert data["status"] == "error"
+                assert "GUARDRAIL HALT" in data["reason"]
+                assert len(calls) == 2
     finally:
         server.should_exit = True
         await asyncio.gather(task, return_exceptions=True)

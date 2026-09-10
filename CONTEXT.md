@@ -149,6 +149,30 @@ payload gây cost (SMS/API tốn phí — Code of Conduct Intigriti) bị guard 
 TRƯỚC khi request đi ra: Guardrails HALT Run.
 _Avoid_: blind classes (thiếu ý interactsh), ping-back classes
 
+**Exposed Secrets**:
+Lớp catalog batch B (ticket #16) — secret key/key API lộ ra Internet qua URL
+nhạy cảm (.env, bucket, JS bundle, backup files). Detection dùng tool
+`trufflehog-urls` với `--results=verified`: CHỈ secret verify-key với provider
+thành công mới thành Candidate class `secret` severity `high` (fetch pacing ≥
+1 req/s theo rate limit của Run); verify quét lại URL hiện tại trong sandbox
+(không verification — egress proxy chỉ cho target trong Scope) và đối chiếu
+detector + prefix + fingerprint: vẫn còn exposed → Finding, key đã bị xoá/
+rotate → rejected. Evidence chỉ chứa PREFIX của key (4 ký tự + "…") và
+fingerprint sha256 (không đảo ngược được) — key đầy đủ KHÔNG bao giờ nằm
+trong evidence, report hay log (mask trước khi rời container).
+_Avoid_: key leak (dài), credential exposure, trufflehog scan (tên tool)
+
+**SQLi (Sandbox)**:
+Lớp catalog batch B (ticket #16) — SQL injection chỉ được xác minh bằng sqlmap
+CHẠY TRONG SANDBOX BRIDGE với profile an toàn MỨC THẤP: `--technique=BE`
+(error-based + boolean blind duy nhất — không time-based nặng), `--level=1
+--risk=1 --threads=1`, `--delay` ≥ 1 req/s theo rate limit của Run; TUYỆT ĐỐI
+KHÔNG dump dữ liệu, KHÔNG đọc/ghi file hệ thống, KHÔNG os-shell ("minimum
+testing necessary" + rules chống pivot/PII của Program). PoC = injection point
++ payload, KHÔNG phải dữ liệu chiếm được. Stop-condition: output có dấu hiệu
+dump/đọc file/kỹ thuật ngoài profile → Guardrails HALT Run, KHÔNG tiếp tục.
+_Avoid_: sqlmap scan (gợi ý chạy tự do), dump test
+
 ### AI
 
 **Hermes Agent**:

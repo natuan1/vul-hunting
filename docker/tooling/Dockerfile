@@ -11,6 +11,7 @@ ARG GF_COMMIT=dcd4c361f9f5ba302294ed38b8ce278e8ba69006
 RUN git clone --quiet https://github.com/tomnomnom/gf /src/gf \
  && cd /src/gf \
  && git checkout --quiet "${GF_COMMIT}" \
+ && mkdir -p /out \
  && go build -o /out/gf main.go
 
 # ── stage build subzy (ticket #14 — phát hành source, pin theo tag) ──
@@ -19,12 +20,14 @@ ARG SUBZY_REF=v1.2.1
 RUN git clone --quiet --branch "${SUBZY_REF}" --depth 1 \
       https://github.com/PentestPad/subzy /src/subzy \
  && cd /src/subzy \
+ && mkdir -p /out \
  && CGO_ENABLED=0 go build -o /out/subzy .
 
 # ── stage build crlfuzz (ticket #15 — go install pin theo tag) ──
 FROM golang:1.24-bookworm AS crlfuzz-builder
 ARG CRLFUZZ_REF=v1.4.1
-RUN go install github.com/dwisiswant0/crlfuzz/cmd/crlfuzz@${CRLFUZZ_REF} \
+RUN mkdir -p /out \
+ && go install github.com/dwisiswant0/crlfuzz/cmd/crlfuzz@${CRLFUZZ_REF} \
  && cp "$(go env GOPATH)/bin/crlfuzz" /out/crlfuzz
 
 FROM debian:bookworm-slim
@@ -51,13 +54,17 @@ ARG CRLFUZZ_REF=v1.4.1
 ARG GRAPHW00F_COMMIT=4901f824140a2da168876412593c213afbdd75fb
 ARG GRAPHQL_COP_COMMIT=2b7e086efae672f28b419c7fcdfe6b48d846c9dc
 ARG SSTIMAP_COMMIT=1c27fdb4a4cc7d55b66fc0e16937ee7de7047490
+# batch B (ticket #16): trufflehog (verify-key secrets) pin release + sqlmap
+# pin tag (thuần python, không pip)
+ARG TRUFFLEHOG_VERSION=3.97.4
+ARG SQLMAP_TAG=1.9.9
 
 LABEL org.opencontainers.image.title="vulhunt-tooling" \
       org.opencontainers.image.description="Recon + detection CLI tools: subfinder/amass/dnsx/naabu/httpx/katana/gau/waymore/gf/nuclei" \
       org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl unzip jq python3 python3-venv \
+ && apt-get install -y --no-install-recommends ca-certificates curl git unzip jq python3 python3-venv \
  && rm -rf /var/lib/apt/lists/*
 
 # ── subfinder ──
@@ -185,6 +192,24 @@ COPY graphql-cop /usr/local/bin/graphql-cop
 COPY sstimap /usr/local/bin/sstimap
 RUN chmod 755 /usr/local/bin/crlfuzz /usr/local/bin/graphw00f \
   /usr/local/bin/graphql-cop /usr/local/bin/sstimap
+
+# ── batch B (ticket #16): trufflehog (verify-key secrets) — binary chính thức
+# theo release, verify checksum từ checksums.txt của release đó ──
+RUN curl --retry 3 --retry-delay 2 -sfL "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_linux_${TARGETARCH}.tar.gz" -o "/tmp/trufflehog_${TRUFFLEHOG_VERSION}_linux_${TARGETARCH}.tar.gz" \
+ && curl --retry 3 --retry-delay 2 -sfL "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_checksums.txt" -o /tmp/trufflehog.sha256 \
+ && (cd /tmp && grep "trufflehog_${TRUFFLEHOG_VERSION}_linux_${TARGETARCH}.tar.gz" trufflehog.sha256 | sha256sum -c -) \
+ && tar -xzf "/tmp/trufflehog_${TRUFFLEHOG_VERSION}_linux_${TARGETARCH}.tar.gz" -C /usr/local/bin trufflehog \
+ && rm /tmp/trufflehog_* /tmp/trufflehog.sha256
+
+# ── batch B (ticket #16): sqlmap (thuần python) — clone pin tag + wrapper;
+# KHÔNG có flag dump/đọc file trong profile của worker (app/sqli.py) — tool
+# chỉ chạy trong sandbox bridge với profile an toàn ──
+RUN git clone --quiet https://github.com/sqlmapproject/sqlmap /opt/sqlmap \
+ && git -C /opt/sqlmap checkout --quiet "${SQLMAP_TAG}" \
+ && chmod -R a+rX /opt/sqlmap
+COPY trufflehog-urls /usr/local/bin/trufflehog-urls
+COPY sqlmap /usr/local/bin/sqlmap
+RUN chmod 755 /usr/local/bin/trufflehog-urls /usr/local/bin/sqlmap
 
 # thư mục làm việc ghi được (amass v4/v5 cần nơi lưu graph db tạm trong container,
 # waymore lần chạy đầu ghi config.yml vào ~/.config/waymore, nuclei cần ~/.config)

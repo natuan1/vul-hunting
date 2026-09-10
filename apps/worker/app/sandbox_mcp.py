@@ -25,7 +25,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import detect, guardrails, httpverify, oob, sandbox, takeover, verify
+from . import detect, guardrails, httpverify, oob, sandbox, secrets_scan, sqli, takeover, verify
 from .config import settings
 
 log = logging.getLogger("sandbox_mcp")
@@ -214,6 +214,79 @@ async def _verify_http(candidate_id: int, payload: str | None = None) -> dict[st
     }
 
 
+async def _verify_secret(candidate_id: int) -> dict[str, Any]:
+    """Phần thực thi của tool verify secret (tách khỏi decorator để test)."""
+    if _pool is None:
+        raise RuntimeError("worker chưa sẵn sàng (pool chưa bind)")
+    candidate = await detect.get_candidate(_pool, candidate_id)
+    if candidate is None:
+        return {
+            "status": "error",
+            "reason": f"Candidate #{candidate_id} không tồn tại",
+        }
+    if candidate["class"] != secrets_scan.SECRET_CANDIDATE_CLASS:
+        return {
+            "status": "error",
+            "reason": (
+                f"Candidate #{candidate_id} thuộc class '{candidate['class']}' — "
+                f"tool này chỉ dành cho class "
+                f"'{secrets_scan.SECRET_CANDIDATE_CLASS}' (exposed secrets)"
+            ),
+        }
+    result = await secrets_scan.run_secret_verification(_pool, candidate)
+    return {
+        **result,
+        "note": (
+            "evidence secret (baseline không body + rescan đã mask + đối chiếu "
+            f"detection): GET /candidates/{candidate_id}/verify-evidence · "
+            "evidence KHÔNG bao giờ chứa key đầy đủ — chỉ prefix đã che; báo "
+            "cáo ĐỪNG dán secret nguyên bản"
+        ),
+    }
+
+
+async def _verify_sqli(candidate_id: int) -> dict[str, Any]:
+    """Phần thực thi của tool verify sqli (tách khỏi decorator để test)."""
+    if _pool is None:
+        raise RuntimeError("worker chưa sẵn sàng (pool chưa bind)")
+    candidate = await detect.get_candidate(_pool, candidate_id)
+    if candidate is None:
+        return {
+            "status": "error",
+            "reason": f"Candidate #{candidate_id} không tồn tại",
+        }
+    if candidate["class"] not in sqli.SQLI_VERIFY_CLASSES:
+        return {
+            "status": "error",
+            "reason": (
+                f"Candidate #{candidate_id} thuộc class '{candidate['class']}' — "
+                f"tool này chỉ dành cho class "
+                f"{', '.join(sqli.SQLI_VERIFY_CLASSES)} (SQLi)"
+            ),
+        }
+    try:
+        result = await sqli.run_sqli_verification(_pool, candidate)
+    except guardrails.RunHalted as exc:
+        # stop-condition: sqlmap có dấu hiệu dump/đọc file — Run đã HALT,
+        # không tiếp tục; trả về như một kết quả có chủ đích cho agent
+        return {
+            "status": "error",
+            "reason": (
+                f"GUARDRAIL HALT (stop-condition sqlmap — dump/đọc file bị cấm): "
+                f"{exc}"
+            ),
+        }
+    return {
+        **result,
+        "note": (
+            "evidence SQLi (baseline + sqlmap injection point, KHÔNG dữ liệu): "
+            f"GET /candidates/{candidate_id}/verify-evidence · profile an toàn: "
+            "technique BE (error/boolean), level 1, risk 1, threads 1, delay "
+            f"{result.get('delay_s')}s — PoC chỉ chứng minh injection"
+        ),
+    }
+
+
 def build_mcp() -> FastMCP:
     """Tạo FastMCP server (mỗi instance chỉ chạy lifespan 1 lần — production
     dùng singleton bên dưới, test tạo instance riêng khi cần)."""
@@ -334,6 +407,52 @@ def build_mcp() -> FastMCP:
         không tồn tại/sai class.
         """
         return await _verify_takeover(candidate_id)
+
+    @server.tool()
+    async def verify_secret(candidate_id: int) -> dict[str, Any]:
+        """Xác minh agentic 1 Candidate class 'secret' (exposed secrets, batch B
+        ticket #16) — đi trọn vòng: sandbox fetch lại URL (baseline KHÔNG thu
+        body) → rescan trufflehog TRONG SANDBOX (không verification — egress
+        proxy chỉ cho target trong Scope; verify-key đã làm ở Detection Phase
+        với --results=verified) → đối chiếu detector + prefix + fingerprint
+        với detection → secret VẪN còn được phục vụ → `verified` (Finding);
+        đã bị xoá/rotate → `rejected` (no_longer_exposed / secret_changed).
+        Evidence KHÔNG bao giờ chứa key đầy đủ — chỉ prefix đã che; khi báo
+        cáo cũng KHÔNG dán key nguyên bản. KHÔNG bao giờ fetch trực tiếp.
+
+        Args:
+            candidate_id: id của Candidate class 'secret' cần xác minh.
+
+        Returns JSON: candidate_id, class, verdict (verified|rejected), score,
+        threshold, reason, signals, patterns, expected (detector+masked),
+        evidence_path, baseline_session_id, verify_session_id. Status 'error'
+        nếu candidate không tồn tại/sai class.
+        """
+        return await _verify_secret(candidate_id)
+
+    @server.tool()
+    async def verify_sqli(candidate_id: int) -> dict[str, Any]:
+        """Xác minh agentic 1 Candidate class 'sqli' (SQL injection, batch B
+        ticket #16) — sqlmap CHỈ chạy TRONG sandbox bridge với profile an toàn
+        MỨC THẤP: `--technique=BE` (error-based + boolean blind duy nhất),
+        `--level=1 --risk=1 --threads=1`, `--delay` ≥ 1 req/s theo rate limit
+        của Run. TUYỆT ĐỐI KHÔNG: time-based nặng, dump dữ liệu, đọc file hệ
+        thống (minimum testing necessary + rules chống pivot/PII của Program).
+        STOP-CONDITION: output có dấu hiệu dump/đọc file → guardrails HALT Run
+        + cảnh báo, KHÔNG tiếp tục. PoC = chứng minh injection được (injection
+        point + payload), KHÔNG phải chiếm dữ liệu. Baseline bị WAF chặn →
+        sqlmap không chạy (không lãng phí request).
+
+        Args:
+            candidate_id: id của Candidate class 'sqli' cần xác minh.
+
+        Returns JSON: candidate_id, class, verdict (verified|rejected), score,
+        threshold, reason, signals, patterns, sqlmap (parameters/types/payloads/
+        dbms), violations (luôn rỗng khi verdict), delay_s, evidence_path,
+        baseline_session_id, verify_session_id. Status 'error' nếu candidate
+        không tồn tại/sai class hoặc stop-condition HALT.
+        """
+        return await _verify_sqli(candidate_id)
 
     @server.tool()
     async def verify_http_class(

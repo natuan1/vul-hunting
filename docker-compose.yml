@@ -78,6 +78,9 @@ services:
       # ── catalog batch A (ticket #15) — 7 lớp HTTP-only; origin canary cho
       # verify CORS misconfig ──
       VERIFY_CORS_ORIGIN: ${VERIFY_CORS_ORIGIN:-https://canary-vulhunt.example}
+      # ── catalog batch B (ticket #16) — exposed secrets + SQLi ──
+      SECRETS_MAX_TARGETS: ${SECRETS_MAX_TARGETS:-25}
+      SQLMAP_MIN_DELAY_S: ${SQLMAP_MIN_DELAY_S:-1}
       # ── interactsh OOB (ticket #13) — client chạy TRONG worker (ADR-0004),
       # server public mặc định; self-host interactsh là v2 khi lên VPS ──
       INTERACTSH_SERVER: ${INTERACTSH_SERVER:-oast.pro,oast.live,oast.site,oast.online,oast.fun,oast.me}

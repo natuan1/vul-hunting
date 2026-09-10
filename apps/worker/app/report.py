@@ -284,6 +284,15 @@ _CLASS_META = {
         "An attacker can read or modify database contents, potentially "
         "leading to full data compromise.",
     ),
+    "secret": (
+        "Exposed Secret / API Key",
+        "A valid credential (verified against its provider) is served publicly "
+        "at a program-controlled URL. The key is redacted throughout this "
+        "report — only a short prefix is shown.",
+        "Anyone can retrieve the exposed key and access the associated "
+        "third-party account or service as the program (data exposure, "
+        "resource abuse, account takeover).",
+    ),
     "lfi": (
         "Local File Inclusion (LFI)",
         "User-controlled input is used in a file path on the server without "
